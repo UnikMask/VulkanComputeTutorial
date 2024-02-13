@@ -1,0 +1,6 @@
+build/
+release/
+*.spv
+compile_commands.json
+tags
+.cache/
