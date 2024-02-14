@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <vector>
 #include <vulkan/vulkan_core.h>
 
@@ -83,6 +84,7 @@ class ParticleApplication {
 
 	VkPhysicalDevice physicalDevice;
 	VkDevice device;
+	VmaAllocator allocator;
 
 	VkQueue graphicsQueue;
 	VkQueue presentQueue;
@@ -133,6 +135,11 @@ class ParticleApplication {
 	VmaAllocation depthImageMemory;
 	VkImageView depthImageView;
 
+	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
+	VkImage colorImage;
+	VmaAllocation colorImageMemory;
+	VkImageView colorImageView;
+
 	void initWindow() {
 		glfwInitHint(GLFW_PLATFORM, GLFW_ANY_PLATFORM);
 		glfwInit();
@@ -152,7 +159,67 @@ class ParticleApplication {
 			});
 	}
 
-	void initVulkan() {}
+	void initVulkan() {
+		createInstance();
+		createSurface();
+		pickPhysicalDevice();
+		createLogicalDevice();
+	}
+
+	void createInstance() {}
+
+	void setupDebugMessenger() {}
+	void createAllocator() {}
+	void createSurface() {}
+	void pickPhysicalDevice() {}
+
+	struct QueueFamilyIndices {
+		std::optional<uint32_t> graphicsFamily;
+		std::optional<uint32_t> presentFamily;
+		std::optional<uint32_t> transferFamily;
+		std::optional<uint32_t> computeFamily;
+
+		bool isComplete() {
+			return graphicsFamily.has_value() && presentFamily.has_value() &&
+				   transferFamily.has_value() && computeFamily.has_value();
+		}
+	};
+
+	QueueFamilyIndices pickQueueFamilies() { return {}; }
+
+	bool isDeviceSuitable(VkPhysicalDevice device) { return false; }
+
+	void createLogicalDevice() {}
+
+	void createBuffer() {}
+	void createImage() {}
+
+	void createSwapChain() {}
+	void recreateSwapChain() {}
+	void createSwapChainImageViews() {}
+
+	void createRenderPass() {}
+	void createFramebuffers() {}
+
+	void createGraphicsDescriptorSetLayout() {}
+	void createComputeDescritporSetLayout() {}
+
+	void createUniformBuffers() {}
+	void createStorageBuffers() {}
+
+	void createGraphicsPool() {}
+	void createComputePool() {}
+
+	void createDepthResources() {}
+	void createColorResources() {}
+
+	void createGraphicsDescriptorSets() {}
+	void createComputeDescriptorSets() {}
+
+	void createGraphicsPipeline() {}
+	void createComputePipeline() {}
+
+	void createFrameBuffers() {}
 
 	void mainLoop() {}
 
