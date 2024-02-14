@@ -1,8 +1,12 @@
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan_core.h>
 
@@ -28,6 +32,15 @@ const int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<const char *> validationLayers = {
 	"VK_LAYER_KHRONOS_validation"};
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL
+debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+			  VkDebugUtilsMessageTypeFlagsEXT messageType,
+			  const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
+			  void *pUserData) {
+	std::cerr << "[Validation layer] " << pCallbackData->pMessage << std::endl;
+	return VK_FALSE;
+}
 
 VkResult CreateDebugUtilsMessengerEXT(
 	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
@@ -62,6 +75,22 @@ static std::vector<char> readFile(const std::string &f) {
 	file.read(buffer.data(), fileSize);
 	file.close();
 	return buffer;
+}
+
+static void checkError(int result, const std::string &message) {
+	auto throwErr = [&](const std::string &errMsg) {
+		throw std::runtime_error(message + " - " + errMsg);
+	};
+	switch (result) {
+	case VK_SUCCESS:
+		break;
+	case VK_ERROR_INITIALIZATION_FAILED:
+		throwErr("Vulkan loader not found!");
+	case VK_ERROR_EXTENSION_NOT_PRESENT:
+		throwErr("Extension specified is not present in device!");
+	default:
+		throwErr("Unknown error occured!");
+	}
 }
 
 class ParticleApplication {
@@ -166,11 +195,101 @@ class ParticleApplication {
 		createLogicalDevice();
 	}
 
-	void createInstance() {}
+	void createInstance() {
+		auto glfwExtensions = getRequiredExtensions();
 
-	void setupDebugMessenger() {}
-	void createAllocator() {}
-	void createSurface() {}
+		uint32_t extensionCount = 0;
+		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount,
+											   nullptr);
+		std::vector<VkExtensionProperties> extensions(extensionCount);
+		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount,
+											   extensions.data());
+
+		VkInstanceCreateInfo instanceInfo{
+			.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+			.pApplicationInfo = &APP_INFO,
+			.enabledLayerCount = 0,
+			.enabledExtensionCount = (uint32_t)glfwExtensions.size(),
+			.ppEnabledExtensionNames = glfwExtensions.data(),
+		};
+
+		if (enableValidationLayers) {
+			checkError(checkValidationLayerSupport(),
+					   "Failed to create instance");
+			instanceInfo.enabledLayerCount = (uint32_t)validationLayers.size();
+			instanceInfo.ppEnabledLayerNames = validationLayers.data();
+			instanceInfo.pNext = &DEFAULT_DEBUG_UTIL_MESSENGER_CREATE_INFO;
+		}
+		VkResult result = vkCreateInstance(&instanceInfo, nullptr, &instance);
+		checkError(result, "Failed to create instance");
+
+		if (enableValidationLayers) {
+			result = CreateDebugUtilsMessengerEXT(
+				instance, &DEFAULT_DEBUG_UTIL_MESSENGER_CREATE_INFO, nullptr,
+				&debugMessenger);
+			checkError(result, "Failed to create debug messenger extension");
+		}
+	}
+
+	const VkApplicationInfo APP_INFO{
+		.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+		.pApplicationName = "Vulkan Tutorial App",
+		.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+		.pEngineName = "No Engine",
+		.engineVersion = VK_MAKE_VERSION(1, 0, 0),
+		.apiVersion = VK_API_VERSION_1_0,
+	};
+
+	std::vector<const char *> getRequiredExtensions() {
+		uint32_t glfwExtensionCount = 0;
+		const char **glfwExtensions =
+			glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
+
+		std::vector<const char *> extensions(
+			glfwExtensions, glfwExtensions + glfwExtensionCount);
+		if (enableValidationLayers) {
+			extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+		}
+		return extensions;
+	}
+
+	const VkDebugUtilsMessengerCreateInfoEXT
+		DEFAULT_DEBUG_UTIL_MESSENGER_CREATE_INFO{
+			.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
+			.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |
+							   VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+							   VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT,
+			.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+						   VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+						   VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT,
+			.pfnUserCallback = debugCallback,
+			.pUserData = nullptr,
+		};
+
+	VkResult checkValidationLayerSupport() {
+		uint32_t layerCount = 0;
+		vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+		std::vector<VkLayerProperties> availableLayers(layerCount);
+		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+
+		for (const char *layerName : validationLayers) {
+			bool supported = [&]() {
+				for (const auto &layer : availableLayers) {
+					if (strcmp(layer.layerName, layerName) == 0)
+						return true;
+				}
+				return false;
+			}();
+			if (!supported)
+				return VK_ERROR_LAYER_NOT_PRESENT;
+		}
+		return VK_SUCCESS;
+	}
+
+	void createSurface() {
+		checkError(glfwCreateWindowSurface(instance, window, nullptr, &surface),
+				   "Failed to create surface");
+	}
 	void pickPhysicalDevice() {}
 
 	struct QueueFamilyIndices {
@@ -185,11 +304,49 @@ class ParticleApplication {
 		}
 	};
 
-	QueueFamilyIndices pickQueueFamilies() { return {}; }
+	QueueFamilyIndices pickQueueFamilies(VkPhysicalDevice device) {
+		uint32_t familyCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount, nullptr);
+		std::vector<VkQueueFamilyProperties> queueFamilies(familyCount);
+		vkGetPhysicalDeviceQueueFamilyProperties(device, &familyCount,
+												 queueFamilies.data());
+
+		auto pickFamily = [&](std::function<bool(uint32_t)> check) {
+			for (size_t i = 0; i < queueFamilies.size(); i++) {
+				if (check(i)) {
+					return std::optional<uint32_t>(i);
+				}
+			}
+			return std::optional<uint32_t>{};
+		};
+		return {
+			.graphicsFamily = pickFamily([&](uint32_t i) {
+				return queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT;
+			}),
+			.presentFamily = pickFamily([&](uint32_t i) {
+				if (!(queueFamilies[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+					return false;
+				}
+				VkBool32 presentSupport = false;
+				int result = vkGetPhysicalDeviceSurfaceSupportKHR(
+					device, i, surface, &presentSupport);
+				checkError(result, "Failed to pick present queue family");
+				return (bool)presentSupport;
+			}),
+			.transferFamily = pickFamily([&](uint32_t i) {
+				return queueFamilies[i].queueFlags & VK_QUEUE_TRANSFER_BIT;
+			}),
+			.computeFamily = pickFamily([&](uint32_t i) {
+				return queueFamilies[i].queueFlags & VK_QUEUE_COMPUTE_BIT;
+			}),
+		};
+	}
 
 	bool isDeviceSuitable(VkPhysicalDevice device) { return false; }
 
 	void createLogicalDevice() {}
+
+	void createAllocator() { VmaAllocatorCreateInfo createInfo{}; }
 
 	void createBuffer() {}
 	void createImage() {}
@@ -223,7 +380,11 @@ class ParticleApplication {
 
 	void mainLoop() {}
 
-	void cleanup() {}
+	void cleanup() {
+		vkDestroyInstance(instance, nullptr);
+		glfwDestroyWindow(window);
+		glfwTerminate();
+	}
 };
 
 int main() {
