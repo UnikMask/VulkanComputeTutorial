@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -30,22 +31,24 @@ const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
-const std::vector<const char *> validationLayers = {
-	"VK_LAYER_KHRONOS_validation"};
+const std::vector<const char *> VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 
-static VKAPI_ATTR VkBool32 VKAPI_CALL
-debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-			  VkDebugUtilsMessageTypeFlagsEXT messageType,
-			  const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
-			  void *pUserData) {
+const std::vector<const char *> REQUIRED_EXTENSIONS = {
+	VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+	VK_KHR_MAINTENANCE_1_EXTENSION_NAME,
+};
+
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+	VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+	VkDebugUtilsMessageTypeFlagsEXT messageType,
+	const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData, void *pUserData) {
 	std::cerr << "[Validation layer] " << pCallbackData->pMessage << std::endl;
 	return VK_FALSE;
 }
 
 VkResult CreateDebugUtilsMessengerEXT(
 	VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
-	const VkAllocationCallbacks *pAllocator,
-	VkDebugUtilsMessengerEXT *pMessenger) {
+	const VkAllocationCallbacks *pAllocator, VkDebugUtilsMessengerEXT *pMessenger) {
 	auto func = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
 		instance, "vkCreateDebugUtilsMessengerEXT");
 	if (func != nullptr) {
@@ -78,16 +81,21 @@ static std::vector<char> readFile(const std::string &f) {
 }
 
 static void checkError(int result, const std::string &message) {
-	auto throwErr = [&](const std::string &errMsg) {
+	const auto throwErr = [&](const std::string &errMsg) {
 		throw std::runtime_error(message + " - " + errMsg);
 	};
 	switch (result) {
 	case VK_SUCCESS:
+	case VK_INCOMPLETE:
 		break;
 	case VK_ERROR_INITIALIZATION_FAILED:
 		throwErr("Vulkan loader not found!");
 	case VK_ERROR_EXTENSION_NOT_PRESENT:
 		throwErr("Extension specified is not present in device!");
+	case VK_ERROR_OUT_OF_HOST_MEMORY:
+		throwErr("Ran out of host memory!");
+	case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+		throwErr("Ran out of graphics device memory!");
 	default:
 		throwErr("Unknown error occured!");
 	}
@@ -178,14 +186,13 @@ class ParticleApplication {
 		glfwWindowHintString(GLFW_WAYLAND_APP_ID, "vulkan_tutorial");
 		glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
-		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan ComputeTutorial",
-								  nullptr, nullptr);
+		window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan ComputeTutorial", nullptr,
+								  nullptr);
 		glfwSetWindowUserPointer(window, this);
-		glfwSetFramebufferSizeCallback(
-			window, [](GLFWwindow *win, int w, int h) {
-				auto app = (ParticleApplication *)glfwGetWindowUserPointer(win);
-				app->frameBufferResized = true;
-			});
+		glfwSetFramebufferSizeCallback(window, [](GLFWwindow *win, int w, int h) {
+			auto app = (ParticleApplication *)glfwGetWindowUserPointer(win);
+			app->frameBufferResized = true;
+		});
 	}
 
 	void initVulkan() {
@@ -199,8 +206,7 @@ class ParticleApplication {
 		auto glfwExtensions = getRequiredExtensions();
 
 		uint32_t extensionCount = 0;
-		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount,
-											   nullptr);
+		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount, nullptr);
 		std::vector<VkExtensionProperties> extensions(extensionCount);
 		vkEnumerateInstanceExtensionProperties(nullptr, &extensionCount,
 											   extensions.data());
@@ -214,10 +220,9 @@ class ParticleApplication {
 		};
 
 		if (enableValidationLayers) {
-			checkError(checkValidationLayerSupport(),
-					   "Failed to create instance");
-			instanceInfo.enabledLayerCount = (uint32_t)validationLayers.size();
-			instanceInfo.ppEnabledLayerNames = validationLayers.data();
+			checkError(checkValidationLayerSupport(), "Failed to create instance");
+			instanceInfo.enabledLayerCount = (uint32_t)VALIDATION_LAYERS.size();
+			instanceInfo.ppEnabledLayerNames = VALIDATION_LAYERS.data();
 			instanceInfo.pNext = &DEFAULT_DEBUG_UTIL_MESSENGER_CREATE_INFO;
 		}
 		VkResult result = vkCreateInstance(&instanceInfo, nullptr, &instance);
@@ -245,8 +250,8 @@ class ParticleApplication {
 		const char **glfwExtensions =
 			glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
 
-		std::vector<const char *> extensions(
-			glfwExtensions, glfwExtensions + glfwExtensionCount);
+		std::vector<const char *> extensions(glfwExtensions,
+											 glfwExtensions + glfwExtensionCount);
 		if (enableValidationLayers) {
 			extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 		}
@@ -272,7 +277,7 @@ class ParticleApplication {
 		std::vector<VkLayerProperties> availableLayers(layerCount);
 		vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
 
-		for (const char *layerName : validationLayers) {
+		for (const char *layerName : VALIDATION_LAYERS) {
 			bool supported = [&]() {
 				for (const auto &layer : availableLayers) {
 					if (strcmp(layer.layerName, layerName) == 0)
@@ -290,7 +295,38 @@ class ParticleApplication {
 		checkError(glfwCreateWindowSurface(instance, window, nullptr, &surface),
 				   "Failed to create surface");
 	}
-	void pickPhysicalDevice() {}
+
+	void pickPhysicalDevice() {
+		uint32_t deviceCount = 0;
+		checkError(vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr),
+				   "Failed to pick physical devices");
+		std::vector<VkPhysicalDevice> devices(deviceCount);
+		vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
+
+		std::optional<VkPhysicalDevice> candidate;
+		for (const auto &dev : devices) {
+			if (isDeviceSuitable(dev)) {
+				candidate = dev;
+				break;
+			}
+		}
+		if (!candidate.has_value()) {
+			throw std::runtime_error(
+				"Failed to pick physical devices - no suitable device found!");
+		}
+		physicalDevice = *candidate;
+
+		// Pick multisampling properties
+		VkPhysicalDeviceProperties props;
+		vkGetPhysicalDeviceProperties(*candidate, &props);
+		VkSampleCountFlags counts = props.limits.framebufferColorSampleCounts &
+									props.limits.framebufferDepthSampleCounts;
+		for (size_t i = VK_SAMPLE_COUNT_64_BIT; i >= VK_SAMPLE_COUNT_1_BIT; i--) {
+			if (counts & (1 << i)) {
+				msaaSamples = (VkSampleCountFlagBits)(1 << i);
+			}
+		}
+	}
 
 	struct QueueFamilyIndices {
 		std::optional<uint32_t> graphicsFamily;
@@ -328,8 +364,8 @@ class ParticleApplication {
 					return false;
 				}
 				VkBool32 presentSupport = false;
-				int result = vkGetPhysicalDeviceSurfaceSupportKHR(
-					device, i, surface, &presentSupport);
+				int result = vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface,
+																  &presentSupport);
 				checkError(result, "Failed to pick present queue family");
 				return (bool)presentSupport;
 			}),
@@ -342,7 +378,51 @@ class ParticleApplication {
 		};
 	}
 
-	bool isDeviceSuitable(VkPhysicalDevice device) { return false; }
+	bool isDeviceSuitable(VkPhysicalDevice dev) {
+		const std::string ERR_MSG = "Failed to check device suitability";
+
+		// Get device features and properties
+		VkPhysicalDeviceProperties props;
+		VkPhysicalDeviceFeatures features;
+		vkGetPhysicalDeviceProperties(dev, &props);
+		vkGetPhysicalDeviceFeatures(dev, &features);
+
+		// Get capabilities
+		VkSurfaceCapabilitiesKHR caps;
+		int res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, surface, &caps);
+		checkError(res, ERR_MSG);
+
+		// Get supported surface formats
+		uint32_t count;
+		res = vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &count, nullptr);
+		checkError(res, ERR_MSG);
+		std::vector<VkSurfaceFormatKHR> formats(count);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &count, formats.data());
+
+		// Get supported present modes
+		res =
+			vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &count, nullptr);
+		checkError(res, ERR_MSG);
+		std::vector<VkPresentModeKHR> presents(count);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &count,
+												  presents.data());
+
+		// Get supported extensions
+		res = vkEnumerateDeviceExtensionProperties(dev, nullptr, &count, nullptr);
+		checkError(res, ERR_MSG);
+		std::vector<VkExtensionProperties> availableExtensions(count);
+		vkEnumerateDeviceExtensionProperties(dev, nullptr, &count,
+											 availableExtensions.data());
+		std::set<std::string> unavailableExtensions(REQUIRED_EXTENSIONS.begin(),
+													REQUIRED_EXTENSIONS.end());
+		for (const auto &ext : availableExtensions) {
+			unavailableExtensions.erase(ext.extensionName);
+		}
+
+		return features.geometryShader && pickQueueFamilies(dev).isComplete() &&
+			   unavailableExtensions.empty() && !formats.empty() &&
+			   !presents.empty() && features.samplerAnisotropy;
+	}
 
 	void createLogicalDevice() {}
 
