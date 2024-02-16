@@ -9,7 +9,6 @@ set(GLM_ENABLE_CXX_20 "ON")
 set(GLFW_BUILD_WAYLAND "ON")
 set(GLFW_BUILD_X11 "ON")
 find_package(Vulkan REQUIRED)
-find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 FetchContent_Declare(
 	glm
 	GIT_REPOSITORY	https://github.com/g-truc/glm.git
@@ -25,9 +24,9 @@ FetchContent_MakeAvailable(glfw)
 
 add_executable(VulkanCompute "./main.cpp")
 
-target_include_directories(${PROJECT_NAME} PUBLIC libs/)
-
 message(STATUS $ENV{SHADER_COMPILE_SCRIPT})
+
+target_include_directories(${PROJECT_NAME} PRIVATE libs/)
 
 add_custom_target(compile_shaders ALL
     COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/compile_shaders.sh
@@ -50,7 +49,6 @@ add_dependencies(${PROJECT_NAME} compile_tags)
 add_dependencies(${PROJECT_NAME} copy_resources)
 
 target_link_libraries(${PROJECT_NAME} 
-    PRIVATE GPUOpen::VulkanMemoryAllocator
     PUBLIC Vulkan::Vulkan
     PUBLIC glm::glm
     PUBLIC glfw)
