@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -88,6 +89,10 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance,
 	}
 }
 
+const std::vector<VkPresentModeKHR> PRESENT_MODE_ORDER = {
+	VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_FIFO_KHR,
+	VK_PRESENT_MODE_IMMEDIATE_KHR, VK_PRESENT_MODE_FIFO_RELAXED_KHR};
+
 static std::vector<char> readFile(const std::string &f) {
 	std::ifstream file(f, std::ios::ate | std::ios::binary);
 
@@ -135,6 +140,10 @@ class ParticleApplication {
 	}
 
 	~ParticleApplication() {
+		for (auto &imageView : swapChainImageViews) {
+			vkDestroyImageView(device, imageView, nullptr);
+		}
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		vmaDestroyAllocator(allocator);
 		vkDestroyDevice(device, nullptr);
 #if !(NDEBUG)
@@ -165,7 +174,7 @@ class ParticleApplication {
 	std::vector<VkImage> swapChainImages;
 	VkFormat swapChainFormat;
 	VkExtent2D swapChainExtent;
-	std::vector<VkImageView> swapChainImageView;
+	std::vector<VkImageView> swapChainImageViews;
 
 	VkRenderPass renderPass;
 	VkDescriptorSetLayout graphicsDescriptorSetLayout;
@@ -234,6 +243,8 @@ class ParticleApplication {
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createAllocator();
+		createSwapChain();
+		createSwapChainImageViews();
 	}
 
 	void createInstance() {
@@ -392,6 +403,40 @@ class ParticleApplication {
 		};
 	}
 
+	struct SwapChainSupportDetails {
+		VkSurfaceCapabilitiesKHR capabilities;
+		std::vector<VkSurfaceFormatKHR> formats;
+		std::vector<VkPresentModeKHR> presentModes;
+	};
+
+	VkResult querySwapChainSupport(VkPhysicalDevice dev,
+								   SwapChainSupportDetails &details) {
+		const std::string ERR_MSG = "Failed to query swapchain support for device";
+		// Get capabilities
+		VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+			dev, surface, &details.capabilities);
+		if (res != VK_SUCCESS)
+			return res;
+
+		// Get supported surface formats
+		uint32_t c;
+		res = vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &c, nullptr);
+		if (res != VK_SUCCESS && res != VK_INCOMPLETE)
+			return res;
+		details.formats.resize(c);
+		vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &c,
+											 details.formats.data());
+
+		// Get supported present modes
+		res = vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &c, nullptr);
+		if (res != VK_SUCCESS)
+			return res;
+		details.presentModes.resize(c);
+		vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &c,
+												  details.presentModes.data());
+		return VK_SUCCESS;
+	}
+
 	int isDeviceSuitable(VkPhysicalDevice dev) {
 		const std::string ERR_MSG = "Failed to check device suitability";
 
@@ -401,27 +446,12 @@ class ParticleApplication {
 		vkGetPhysicalDeviceProperties(dev, &props);
 		vkGetPhysicalDeviceFeatures(dev, &features);
 
-		// Get capabilities
-		VkSurfaceCapabilitiesKHR caps;
-		int res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(dev, surface, &caps);
-		checkError(res, ERR_MSG);
-
-		// Get supported surface formats
-		uint32_t count;
-		res = vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &count, nullptr);
-		checkError(res, ERR_MSG);
-		std::vector<VkSurfaceFormatKHR> formats(count);
-		vkGetPhysicalDeviceSurfaceFormatsKHR(dev, surface, &count, formats.data());
-
-		// Get supported present modes
-		res =
-			vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &count, nullptr);
-		checkError(res, ERR_MSG);
-		std::vector<VkPresentModeKHR> presents(count);
-		vkGetPhysicalDeviceSurfacePresentModesKHR(dev, surface, &count,
-												  presents.data());
+		SwapChainSupportDetails support;
+		int res = querySwapChainSupport(dev, support);
+		checkError(res, "Failed to query swap chain support");
 
 		// Get supported extensions
+		uint32_t count;
 		res = vkEnumerateDeviceExtensionProperties(dev, nullptr, &count, nullptr);
 		checkError(res, ERR_MSG);
 		std::vector<VkExtensionProperties> availableExtensions(count);
@@ -436,9 +466,9 @@ class ParticleApplication {
 			return VK_ERROR_FEATURE_NOT_PRESENT;
 		if (!pickQueueFamilies(dev).isComplete())
 			return VK_ERROR_INCOMPATIBLE_DRIVER;
-		if (!unavailableExtensions.empty() || presents.empty())
+		if (!unavailableExtensions.empty() || support.presentModes.empty())
 			return VK_ERROR_EXTENSION_NOT_PRESENT;
-		if (formats.empty())
+		if (support.formats.empty())
 			return VK_ERROR_FORMAT_NOT_SUPPORTED;
 		return VK_SUCCESS;
 	}
@@ -583,10 +613,132 @@ class ParticleApplication {
 		checkError(res, "Failed to create image");
 	}
 
-	void createSwapChain() {}
+	void createSwapChain() {
+		SwapChainSupportDetails details;
+		int res = querySwapChainSupport(physicalDevice, details);
+		checkError(res, "Failed to query swap chain support on swapchain creation");
 
-	void recreateSwapChain() {}
-	void createSwapChainImageViews() {}
+		VkSurfaceFormatKHR format = details.formats[0];
+		for (const auto &f : details.formats) {
+			if (f.format == VK_FORMAT_B8G8R8A8_SRGB &&
+				f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+				format = f;
+				break;
+			}
+		}
+
+		VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
+		std::set<VkPresentModeKHR> availablePresents(details.presentModes.begin(),
+													 details.presentModes.end());
+		for (const auto &pm : PRESENT_MODE_ORDER) {
+			auto found = availablePresents.find(pm);
+			if (found != availablePresents.end()) {
+				presentMode = *found;
+				break;
+			}
+		}
+
+		VkExtent2D swapExtent = details.capabilities.currentExtent;
+		if (details.capabilities.currentExtent.width == UINT32_MAX) {
+			int width, height;
+			glfwGetFramebufferSize(window, &width, &height);
+			swapExtent = {
+				.width = std::clamp((uint32_t)width,
+									details.capabilities.minImageExtent.width,
+									details.capabilities.maxImageExtent.width),
+				.height = std::clamp((uint32_t)height,
+									 details.capabilities.minImageExtent.height,
+									 details.capabilities.maxImageExtent.height),
+			};
+		}
+
+		uint32_t imageCount = details.capabilities.minImageCount + 1;
+		if (details.capabilities.maxImageCount > 0 &&
+			imageCount > details.capabilities.maxImageCount) {
+			imageCount = details.capabilities.maxImageCount;
+		}
+
+		VkSwapchainCreateInfoKHR createInfo{
+			.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+			.surface = surface,
+			.minImageCount = imageCount,
+			.imageFormat = format.format,
+			.imageColorSpace = format.colorSpace,
+			.imageExtent = swapExtent,
+			.imageArrayLayers = 1,
+			.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.preTransform = details.capabilities.currentTransform,
+			.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+			.presentMode = presentMode,
+			.clipped = VK_TRUE,
+			.oldSwapchain = VK_NULL_HANDLE,
+		};
+
+		QueueFamilyIndices indices = pickQueueFamilies(physicalDevice);
+		uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(),
+										 indices.presentFamily.value()};
+
+		if (indices.graphicsFamily != indices.presentFamily) {
+			createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+			createInfo.queueFamilyIndexCount = 2;
+			createInfo.pQueueFamilyIndices = queueFamilyIndices;
+		}
+		res = vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapChain);
+		checkError(res, "Failed to create swapchain");
+		vkGetSwapchainImagesKHR(device, swapChain, &imageCount, nullptr);
+		checkError(res, "Failed to get swap chain images");
+		swapChainImages.resize(imageCount);
+		vkGetSwapchainImagesKHR(device, swapChain, &imageCount,
+								swapChainImages.data());
+		swapChainFormat = format.format;
+		swapChainExtent = swapExtent;
+	}
+
+	void recreateSwapChain() {
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
+		createSwapChain();
+	}
+
+	struct ImageViewInfo {
+		VkImage image;
+		VkFormat format;
+		VkImageViewType viewType;
+		VkImageSubresourceRange subresourceRange;
+	};
+
+	VkImageView createImageView(ImageViewInfo &info) {
+		VkImageViewCreateInfo createInfo{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = info.image,
+			.viewType = info.viewType,
+			.format = info.format,
+			.components = {},
+			.subresourceRange = info.subresourceRange,
+		};
+
+		VkImageView imageView;
+		int res = vkCreateImageView(device, &createInfo, nullptr, &imageView);
+		checkError(res, "Failed to create image view");
+		return imageView;
+	}
+
+	void createSwapChainImageViews() {
+		swapChainImageViews.resize(swapChainImages.size());
+		for (size_t i = 0; i < swapChainImageViews.size(); i++) {
+			ImageViewInfo info{.image = swapChainImages[i],
+							   .format = swapChainFormat,
+							   .viewType = VK_IMAGE_VIEW_TYPE_2D,
+							   .subresourceRange = {
+								   .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+								   .baseMipLevel = 0,
+								   .levelCount = 1,
+								   .baseArrayLayer = 0,
+								   .layerCount = 1,
+							   }};
+			swapChainImageViews[i] = createImageView(info);
+		}
+	}
 
 	void createRenderPass() {}
 	void createFramebuffers() {}
