@@ -143,6 +143,7 @@ class ParticleApplication {
 		for (auto &imageView : swapChainImageViews) {
 			vkDestroyImageView(device, imageView, nullptr);
 		}
+
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		vmaDestroyAllocator(allocator);
 		vkDestroyDevice(device, nullptr);
@@ -740,8 +741,136 @@ class ParticleApplication {
 		}
 	}
 
-	void createRenderPass() {}
-	void createFramebuffers() {}
+	void createRenderPass() {
+		VkAttachmentDescription colorAttachment{
+			.format = swapChainFormat,
+			.samples = msaaSamples,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		};
+
+		VkAttachmentReference colorAttachmentRef{
+			.attachment = 0,
+			.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+		};
+
+		VkAttachmentDescription depthAttachment{
+			.format = pickDepthFormat(),
+			.samples = msaaSamples,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		};
+
+		VkAttachmentReference depthAttachmentRef{
+			.attachment = 1,
+			.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		};
+
+		VkAttachmentDescription colorResolveAttachment{
+			.format = swapChainFormat,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		};
+		VkAttachmentReference colorResolveAttachmentRef{
+			.attachment = 2,
+			.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+		};
+
+		VkSubpassDescription subpass{
+			.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &colorAttachmentRef,
+			.pResolveAttachments = &colorResolveAttachmentRef,
+			.pDepthStencilAttachment = &depthAttachmentRef,
+		};
+		VkSubpassDependency dependency{
+			.srcSubpass = VK_SUBPASS_EXTERNAL,
+			.dstSubpass = 0,
+			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+							VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+							VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+			.srcAccessMask = 0,
+			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+							 VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+		};
+		std::vector<VkAttachmentDescription> attachments = {
+			colorAttachment,
+			depthAttachment,
+			colorResolveAttachment,
+		};
+
+		VkRenderPassCreateInfo info{
+			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+			.attachmentCount = (uint32_t)attachments.size(),
+			.pAttachments = attachments.data(),
+			.subpassCount = 1,
+			.pSubpasses = &subpass,
+			.dependencyCount = 1,
+			.pDependencies = &dependency,
+		};
+		int res = vkCreateRenderPass(device, &info, nullptr, &renderPass);
+		checkError(res, "Failed to create render pass");
+	}
+
+	VkFormat pickDepthFormat() {
+		return pickSupportedFormat(
+			{VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT,
+			 VK_FORMAT_D32_SFLOAT},
+			VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+	}
+
+	VkFormat pickSupportedFormat(const std::vector<VkFormat> &candidates,
+								 VkImageTiling tiling,
+								 VkFormatFeatureFlags features) {
+		for (auto &format : candidates) {
+			VkFormatProperties props;
+			vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
+			VkFormatFeatureFlags formatFeatures = (tiling == VK_IMAGE_TILING_OPTIMAL)
+													  ? props.optimalTilingFeatures
+													  : props.linearTilingFeatures;
+			if (features & formatFeatures) {
+				return format;
+			}
+		}
+		checkError(VK_ERROR_FORMAT_NOT_SUPPORTED,
+				   "Failed to pick a supported format");
+		return VK_FORMAT_UNDEFINED;
+	}
+
+	void createFramebuffers() {
+		swapChainFramebuffers.resize(swapChainImages.size());
+
+		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
+			std::vector<VkImageView> imageViews = {colorImageView, depthImageView,
+												   swapChainImageViews[i]};
+			VkFramebufferCreateInfo framebufferInfo{
+				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+				.renderPass = renderPass,
+				.attachmentCount = (uint32_t)imageViews.size(),
+				.pAttachments = imageViews.data(),
+				.width = swapChainExtent.width,
+				.height = swapChainExtent.height,
+				.layers = 1,
+			};
+			int res = vkCreateFramebuffer(device, &framebufferInfo, nullptr,
+										  &swapChainFramebuffers[i]);
+			checkError(res, "Failed to create framebuffer");
+		}
+	}
 
 	void createGraphicsDescriptorSetLayout() {}
 	void createComputeDescritporSetLayout() {}
