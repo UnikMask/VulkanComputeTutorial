@@ -981,11 +981,21 @@ class ParticleApplication {
 			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
 		};
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			vkCreateFence(device, &fenceInfo, nullptr, &graphicsInFlightFences[i]);
-			vkCreateFence(device, &fenceInfo, nullptr, &computeInFlightFences[i]);
-			vkCreateSemaphore(device, &info, nullptr, &renderFinishedSemaphores[i]);
-			vkCreateSemaphore(device, &info, nullptr, &computeFinishedSemaphores[i]);
-			vkCreateSemaphore(device, &info, nullptr, &imageAvailableSemaphores[i]);
+			int res = vkCreateFence(device, &fenceInfo, nullptr,
+									&graphicsInFlightFences[i]);
+			checkError(res, "Failed to create graphics in-flight fence");
+			res = vkCreateFence(device, &fenceInfo, nullptr,
+								&computeInFlightFences[i]);
+			checkError(res, "Failed to create compute in-flight fence");
+			res = vkCreateSemaphore(device, &info, nullptr,
+									&renderFinishedSemaphores[i]);
+			checkError(res, "Failed to create render finished semaphore");
+			res = vkCreateSemaphore(device, &info, nullptr,
+									&computeFinishedSemaphores[i]);
+			checkError(res, "Failed to create compute finished semaphore");
+			res = vkCreateSemaphore(device, &info, nullptr,
+									&imageAvailableSemaphores[i]);
+			checkError(res, "Failed to create image available semaphore");
 		}
 	}
 
