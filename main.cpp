@@ -140,10 +140,13 @@ class ParticleApplication {
 	}
 
 	~ParticleApplication() {
+		vkDestroyCommandPool(device, graphicsPool, nullptr);
+		vkDestroyCommandPool(device, transferPool, nullptr);
+		vkDestroyCommandPool(device, computePool, nullptr);
+
 		for (auto &imageView : swapChainImageViews) {
 			vkDestroyImageView(device, imageView, nullptr);
 		}
-
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		vmaDestroyAllocator(allocator);
 
@@ -250,6 +253,7 @@ class ParticleApplication {
 		createAllocator();
 
 		createGraphicsDescriptorSetLayout();
+		createCommandPools();
 		createComputeDescritporSetLayout();
 
 		createSwapChain();
@@ -930,6 +934,33 @@ class ParticleApplication {
 		int res = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
 											  &computeDescriptorSetLayout);
 		checkError(res, "Failed to create compute descriptor set layout");
+	}
+
+	void createCommandPools() {
+		QueueFamilyIndices queueFamilyIndices = pickQueueFamilies(physicalDevice);
+
+		VkCommandPoolCreateInfo graphicsPoolInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
+		};
+		VkCommandPoolCreateInfo transferPoolInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = queueFamilyIndices.transferFamily.value(),
+		};
+		VkCommandPoolCreateInfo computePoolInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+			.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+			.queueFamilyIndex = queueFamilyIndices.computeFamily.value(),
+		};
+		int res =
+			vkCreateCommandPool(device, &graphicsPoolInfo, nullptr, &graphicsPool);
+		checkError(res, "Failed to create graphics command pool");
+		res = vkCreateCommandPool(device, &transferPoolInfo, nullptr, &transferPool);
+		checkError(res, "Failed to create transfer command pool");
+		res = vkCreateCommandPool(device, &computePoolInfo, nullptr, &computePool);
+		checkError(res, "Failed to create compute command pool");
 	}
 
 	void createUniformBuffers() {}
