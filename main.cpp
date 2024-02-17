@@ -1,3 +1,4 @@
+#include "glm/fwd.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -18,6 +19,10 @@
 #define VMA_IMPLEMENTATION
 #include "vk_mem_alloc.h"
 
+#define GLM_FORCE_RADIANS
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#include <glm/glm.hpp>
+
 #define WINDOW_NAME "Vulkan Tutorial"
 #define APP_NAME WINDOW_NAME
 #define WAYLAND_APP_ID "vulkan_tutorial"
@@ -25,6 +30,7 @@
 const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
 const int MAX_FRAMES_IN_FLIGHT = 2;
+const uint32_t PARTICLE_COUNT = 1024;
 
 const std::vector<const char *> VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 
@@ -49,6 +55,12 @@ const VkApplicationInfo APP_INFO{
 
 struct UniformBufferObject {
 	float deltaTime;
+};
+
+struct Particle {
+	alignas(8) glm::vec2 position;
+	alignas(8) glm::vec2 velocity;
+	alignas(16) glm::vec4 color;
 };
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
@@ -144,9 +156,12 @@ class ParticleApplication {
 	}
 
 	~ParticleApplication() {
+		vkDestroyDescriptorPool(device, renderDescriptorPool, nullptr);
+		vkDestroyDescriptorPool(device, computeDescriptorPool, nullptr);
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			vmaDestroyBuffer(allocator, uniformBuffers[i],
 							 uniformBuffersMemories[i]);
+			vmaDestroyBuffer(allocator, storageBuffers[i], storageBufferMemories[i]);
 		}
 		vkDestroyCommandPool(device, graphicsPool, nullptr);
 		vkDestroyCommandPool(device, transferPool, nullptr);
@@ -269,6 +284,9 @@ class ParticleApplication {
 		createSwapChain();
 		createSwapChainImageViews();
 		createUniformBuffers();
+		createStorageBuffers();
+		createGraphicsPool();
+		createComputePool();
 
 		// Buffer/image dependent
 	}
@@ -1026,14 +1044,13 @@ class ParticleApplication {
 		uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
 		uniformBuffersMemories.resize(MAX_FRAMES_IN_FLIGHT);
 
+		BufferCreateInfo bufferInfo{
+			.size = bufferc,
+			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			.allocFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+						  VMA_ALLOCATION_CREATE_MAPPED_BIT,
+		};
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			BufferCreateInfo bufferInfo{
-				.size = bufferc,
-				.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-				.allocFlags =
-					VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-					VMA_ALLOCATION_CREATE_MAPPED_BIT,
-			};
 			VmaAllocationInfo allocRes;
 			createBuffer(bufferInfo, uniformBuffers[i], uniformBuffersMemories[i],
 						 &allocRes);
@@ -1041,10 +1058,53 @@ class ParticleApplication {
 		}
 	}
 
-	void createStorageBuffers() {}
+	void createStorageBuffers() {
+		VkDeviceSize bufferSize = sizeof(Particle) * PARTICLE_COUNT;
+		storageBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		storageBufferMemories.resize(MAX_FRAMES_IN_FLIGHT);
 
-	void createGraphicsPool() {}
-	void createComputePool() {}
+		BufferCreateInfo bufferInfo{
+			.size = bufferSize,
+			.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+					 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+		};
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			createBuffer(bufferInfo, storageBuffers[i], storageBufferMemories[i],
+						 nullptr);
+		}
+	}
+
+	void createGraphicsPool() {
+		std::vector<VkDescriptorPoolSize> poolSizes{
+			{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT}};
+
+		VkDescriptorPoolCreateInfo info{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT,
+			.poolSizeCount = (uint32_t)poolSizes.size(),
+			.pPoolSizes = poolSizes.data(),
+		};
+		int res =
+			vkCreateDescriptorPool(device, &info, nullptr, &renderDescriptorPool);
+		checkError(res, "Failed to create graphics descriptor pool");
+	}
+
+	void createComputePool() {
+		std::vector<VkDescriptorPoolSize> poolSizes{
+			{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT},
+			{.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2}};
+
+		VkDescriptorPoolCreateInfo info{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+			.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT,
+			.poolSizeCount = (uint32_t)poolSizes.size(),
+			.pPoolSizes = poolSizes.data(),
+		};
+	}
 
 	void createDepthResources() {}
 	void createColorResources() {}
