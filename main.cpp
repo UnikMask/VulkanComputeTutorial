@@ -143,22 +143,22 @@ class ParticleApplication {
 		vkDestroyCommandPool(device, graphicsPool, nullptr);
 		vkDestroyCommandPool(device, transferPool, nullptr);
 		vkDestroyCommandPool(device, computePool, nullptr);
-
 		for (auto &imageView : swapChainImageViews) {
 			vkDestroyImageView(device, imageView, nullptr);
 		}
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
-		vmaDestroyAllocator(allocator);
-
 		vkDestroyDescriptorSetLayout(device, graphicsDescriptorSetLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
+		destroySyncObjects();
 
+		vmaDestroyAllocator(allocator);
 		vkDestroyDevice(device, nullptr);
 #if !(NDEBUG)
 		DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
 #endif
 		vkDestroySurfaceKHR(instance, surface, nullptr);
 		vkDestroyInstance(instance, nullptr);
+
 		glfwDestroyWindow(window);
 		glfwTerminate();
 	}
@@ -247,15 +247,17 @@ class ParticleApplication {
 
 	void initVulkan() {
 		createInstance();
+		// Instance dependents
 		createSurface();
 		pickPhysicalDevice();
 		createLogicalDevice();
-		createAllocator();
 
+		// Device dependents
+		createAllocator();
+		createSyncObjects();
 		createGraphicsDescriptorSetLayout();
 		createCommandPools();
 		createComputeDescritporSetLayout();
-
 		createSwapChain();
 		createSwapChainImageViews();
 	}
@@ -961,6 +963,40 @@ class ParticleApplication {
 		checkError(res, "Failed to create transfer command pool");
 		res = vkCreateCommandPool(device, &computePoolInfo, nullptr, &computePool);
 		checkError(res, "Failed to create compute command pool");
+	}
+
+	void createSyncObjects() {
+		graphicsInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+		computeInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+		computeFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+
+		const VkSemaphoreCreateInfo info{
+			.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+			.flags = VK_SEMAPHORE_TYPE_BINARY,
+		};
+		const VkFenceCreateInfo fenceInfo{
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
+		};
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkCreateFence(device, &fenceInfo, nullptr, &graphicsInFlightFences[i]);
+			vkCreateFence(device, &fenceInfo, nullptr, &computeInFlightFences[i]);
+			vkCreateSemaphore(device, &info, nullptr, &renderFinishedSemaphores[i]);
+			vkCreateSemaphore(device, &info, nullptr, &computeFinishedSemaphores[i]);
+			vkCreateSemaphore(device, &info, nullptr, &imageAvailableSemaphores[i]);
+		}
+	}
+
+	void destroySyncObjects() {
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vkDestroyFence(device, graphicsInFlightFences[i], nullptr);
+			vkDestroyFence(device, computeInFlightFences[i], nullptr);
+			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
+			vkDestroySemaphore(device, computeFinishedSemaphores[i], nullptr);
+			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
+		}
 	}
 
 	void createUniformBuffers() {}
