@@ -168,6 +168,8 @@ class ParticleApplication {
 		vkDestroyCommandPool(device, graphicsPool, nullptr);
 		vkDestroyCommandPool(device, transferPool, nullptr);
 		vkDestroyCommandPool(device, computePool, nullptr);
+		vkDestroyImageView(device, depthImageView, nullptr);
+		vmaDestroyImage(allocator, depthImage, depthImageMemory);
 		for (auto &imageView : swapChainImageViews) {
 			vkDestroyImageView(device, imageView, nullptr);
 		}
@@ -290,9 +292,10 @@ class ParticleApplication {
 		createGraphicsPool();
 		createComputePool();
 
-		// Buffer/image dependent
+		// Buffer/image/swapchain dependent
 		createGraphicsDescriptorSets();
 		createComputeDescriptorSets();
+		createDepthResources();
 	}
 
 	void createInstance() {
@@ -394,9 +397,10 @@ class ParticleApplication {
 		vkGetPhysicalDeviceProperties(*candidate, &props);
 		VkSampleCountFlags counts = props.limits.framebufferColorSampleCounts &
 									props.limits.framebufferDepthSampleCounts;
-		for (size_t i = VK_SAMPLE_COUNT_64_BIT; i >= VK_SAMPLE_COUNT_1_BIT; i--) {
+		for (size_t i = 6; i >= 1; i--) {
 			if (counts & (1 << i)) {
 				msaaSamples = (VkSampleCountFlagBits)(1 << i);
+				break;
 			}
 		}
 	}
@@ -585,19 +589,6 @@ class ParticleApplication {
 		VkBufferUsageFlags usage;
 		VmaAllocationCreateFlags allocFlags;
 	};
-	struct ImageCreateInfo {
-		VkExtent3D extent;
-		VkFormat format;
-		VkImageType imageType = VK_IMAGE_TYPE_2D;
-		VkImageTiling tiling;
-		VkImageCreateFlags imageFlags = 0;
-		uint32_t mipLevels = 1;
-		uint32_t arrayLayers = 0;
-		VkSampleCountFlagBits numSamples = VK_SAMPLE_COUNT_1_BIT;
-		VkImageUsageFlags usage = 0;
-		VmaAllocationCreateFlags allocFlags = 0;
-	};
-
 	void createBuffer(BufferCreateInfo &info, VkBuffer &buffer,
 					  VmaAllocation &allocation, VmaAllocationInfo *allocRes) {
 		VkBufferCreateInfo bufferInfo{
@@ -627,6 +618,19 @@ class ParticleApplication {
 		checkError(res, "Failed to create buffer");
 	}
 
+	struct ImageCreateInfo {
+		VkExtent3D extent;
+		VkFormat format;
+		VkImageType imageType = VK_IMAGE_TYPE_2D;
+		VkImageTiling tiling;
+		VkImageCreateFlags imageFlags = 0;
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 1;
+		VkSampleCountFlagBits numSamples = VK_SAMPLE_COUNT_1_BIT;
+		VkImageUsageFlags usage = 0;
+		VmaAllocationCreateFlags allocFlags = 0;
+	};
+
 	void createImage(ImageCreateInfo &info, VkImage &image,
 					 VmaAllocation &allocation, VmaAllocationInfo *allocRes) {
 
@@ -637,6 +641,8 @@ class ParticleApplication {
 			.format = info.format,
 			.extent = info.extent,
 			.mipLevels = info.mipLevels,
+			.arrayLayers = info.arrayLayers,
+			.samples = info.numSamples,
 			.tiling = info.tiling,
 			.usage = info.usage,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -659,6 +665,58 @@ class ParticleApplication {
 		int res = vmaCreateImage(allocator, &imageInfo, &allocInfo, &image,
 								 &allocation, allocRes);
 		checkError(res, "Failed to create image");
+	}
+	struct LayoutTransitionInfo {
+		VkImage image;
+		VkFormat format;
+		VkImageSubresourceRange subresourceRange;
+		VkImageLayout oldLayout;
+		VkImageLayout newLayout;
+	};
+
+	void transitionImageLayout(LayoutTransitionInfo info, VkCommandBuffer &ctx) {
+		VkImageMemoryBarrier2 barrier{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+			.oldLayout = info.oldLayout,
+			.newLayout = info.newLayout,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = info.image,
+			.subresourceRange = info.subresourceRange,
+
+		};
+		VkPipelineStageFlags srcFlags, dstFlags;
+		switch (barrier.oldLayout) {
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			srcFlags = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+			break;
+		case VK_IMAGE_LAYOUT_UNDEFINED:
+			barrier.srcAccessMask = 0;
+			srcFlags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+		default:
+			return;
+		}
+		switch (barrier.newLayout) {
+		case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			dstFlags = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+			barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+			dstFlags = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+		case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+			barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			dstFlags = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		default:
+			return;
+		}
+
+		VkDependencyInfo dependencyInfo{
+			.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+			.imageMemoryBarrierCount = 1,
+			.pImageMemoryBarriers = &barrier,
+		};
+		vkCmdPipelineBarrier2(ctx, &dependencyInfo);
 	}
 
 	void createSwapChain() {
@@ -1042,6 +1100,61 @@ class ParticleApplication {
 		}
 	}
 
+	struct SingleTimeCommand {
+		VkCommandBuffer ctx;
+		std::function<void()> flush;
+	};
+
+	SingleTimeCommand beginSingleTimeCommand(VkCommandPool commandPool,
+											 VkQueue commandQueue) {
+		VkCommandBufferAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = commandPool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1,
+		};
+		VkCommandBuffer commandBuffer;
+		int res = vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+		checkError(res, "Failed to allocate single time command buffer");
+
+		VkCommandBufferBeginInfo beginInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		};
+		res = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+		checkError(res, "Failed to begin single time command");
+
+		return {
+			.ctx = commandBuffer,
+			.flush =
+				[=, this]() {
+					endSingleTimeCommand(commandBuffer, commandPool, commandQueue);
+				},
+		};
+	}
+
+	void endSingleTimeCommand(VkCommandBuffer commandBuffer,
+							  VkCommandPool commandPool, VkQueue commandQueue) {
+		VkFence singleTimeFence;
+		int res = vkEndCommandBuffer(commandBuffer);
+		checkError(res, "Failed to end single time command");
+		VkFenceCreateInfo fenceInfo{
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.flags = VK_FENCE_CREATE_SIGNALED_BIT,
+		};
+		vkCreateFence(device, &fenceInfo, nullptr, &singleTimeFence);
+		vkResetFences(device, 1, &singleTimeFence);
+
+		VkSubmitInfo submitInfo{
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &commandBuffer,
+		};
+		vkQueueSubmit(commandQueue, 1, &submitInfo, singleTimeFence);
+		vkWaitForFences(device, 1, &singleTimeFence, VK_TRUE, UINT64_MAX);
+		vkDestroyFence(device, singleTimeFence, nullptr);
+	}
+
 	void createUniformBuffers() {
 		VkDeviceSize bufferc = sizeof(UniformBufferObject);
 		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
@@ -1114,7 +1227,49 @@ class ParticleApplication {
 		checkError(res, "Failed to create compute descriptor pool");
 	}
 
-	void createDepthResources() {}
+	inline bool hasStencilComponent(VkFormat format) {
+		return format == VK_FORMAT_D32_SFLOAT_S8_UINT ||
+			   format == VK_FORMAT_D24_UNORM_S8_UINT;
+	}
+
+	void createDepthResources() {
+		VkFormat format = pickDepthFormat();
+		ImageCreateInfo depthInfo{
+			.extent = {.width = swapChainExtent.width,
+					   .height = swapChainExtent.height,
+					   .depth = 1},
+			.format = format,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.numSamples = msaaSamples,
+			.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT};
+		createImage(depthInfo, depthImage, depthImageMemory, nullptr);
+
+		ImageViewInfo viewInfo{
+			.image = depthImage,
+			.format = format,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+								 .baseMipLevel = 0,
+								 .levelCount = 1,
+								 .baseArrayLayer = 0,
+								 .layerCount = 1}};
+		if (hasStencilComponent(viewInfo.format)) {
+			viewInfo.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
+		}
+		depthImageView = createImageView(viewInfo);
+
+		SingleTimeCommand cmd = beginSingleTimeCommand(graphicsPool, graphicsQueue);
+		LayoutTransitionInfo transitionInfo{
+			.image = depthImage,
+			.format = format,
+			.subresourceRange = viewInfo.subresourceRange,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+		transitionImageLayout(transitionInfo, cmd.ctx);
+		cmd.flush();
+	}
+
 	void createColorResources() {}
 
 	void createGraphicsDescriptorSets() {
@@ -1212,7 +1367,26 @@ class ParticleApplication {
 	void createGraphicsPipeline() {}
 	void createComputePipeline() {}
 
-	void createFrameBuffers() {}
+	void createFrameBuffers() {
+		swapChainFramebuffers.resize(swapChainImages.size());
+
+		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
+			std::vector<VkImageView> attachments = {colorImageView, depthImageView,
+													swapChainImageViews[i]};
+			VkFramebufferCreateInfo framebufferInfo{
+				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+				.renderPass = renderPass,
+				.attachmentCount = (uint32_t)attachments.size(),
+				.pAttachments = attachments.data(),
+				.width = swapChainExtent.width,
+				.height = swapChainExtent.height,
+				.layers = 1,
+			};
+			int res = vkCreateFramebuffer(device, &framebufferInfo, nullptr,
+										  &swapChainFramebuffers[i]);
+			checkError(res, "Failed to create swap chain framebuffer");
+		}
+	}
 
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
