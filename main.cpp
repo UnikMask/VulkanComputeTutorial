@@ -501,8 +501,87 @@ class ParticleApplication {
 				   "Failed to create allocator");
 	}
 
-	void createBuffer() {}
-	void createImage() {}
+	struct BufferCreateInfo {
+		VkDeviceSize size;
+		VkBufferCreateFlags bufferFlags;
+		VkBufferUsageFlags usage;
+		VmaAllocationCreateFlags allocFlags;
+	};
+	struct ImageCreateInfo {
+		VkExtent3D extent;
+		VkFormat format;
+		VkImageType imageType = VK_IMAGE_TYPE_2D;
+		VkImageTiling tiling;
+		VkImageCreateFlags imageFlags = 0;
+		uint32_t mipLevels = 1;
+		uint32_t arrayLayers = 0;
+		VkSampleCountFlagBits numSamples = VK_SAMPLE_COUNT_1_BIT;
+		VkImageUsageFlags usage = 0;
+		VmaAllocationCreateFlags allocFlags = 0;
+	};
+
+	void createBuffer(BufferCreateInfo &info, VkBuffer &buffer,
+					  VmaAllocation &allocation, VmaAllocationInfo *allocRes) {
+		VkBufferCreateInfo bufferInfo{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			.flags = info.bufferFlags,
+			.size = info.size,
+			.usage = info.usage,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		};
+
+		QueueFamilyIndices indices = pickQueueFamilies(physicalDevice);
+		uint32_t queueFamilies[] = {indices.graphicsFamily.value(),
+									indices.presentFamily.value()};
+
+		if (indices.graphicsFamily != indices.transferFamily) {
+			bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+			bufferInfo.queueFamilyIndexCount = 2;
+			bufferInfo.pQueueFamilyIndices = queueFamilies;
+		}
+
+		VmaAllocationCreateInfo allocInfo{
+			.flags = info.allocFlags,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+		int res = vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &buffer,
+								  &allocation, allocRes);
+		checkError(res, "Failed to create buffer");
+	}
+
+	void createImage(ImageCreateInfo &info, VkImage &image,
+					 VmaAllocation &allocation, VmaAllocationInfo *allocRes) {
+
+		VkImageCreateInfo imageInfo{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+			.flags = info.imageFlags,
+			.imageType = info.imageType,
+			.format = info.format,
+			.extent = info.extent,
+			.mipLevels = info.mipLevels,
+			.tiling = info.tiling,
+			.usage = info.usage,
+			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		QueueFamilyIndices indices = pickQueueFamilies(physicalDevice);
+		uint32_t queueFamilies[] = {indices.graphicsFamily.value(),
+									indices.transferFamily.value()};
+		if (indices.graphicsFamily.value() != indices.transferFamily.value()) {
+			imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+			imageInfo.queueFamilyIndexCount = 2;
+			imageInfo.pQueueFamilyIndices = queueFamilies;
+		}
+
+		VmaAllocationCreateInfo allocInfo{
+			.flags = info.allocFlags,
+			.usage = VMA_MEMORY_USAGE_AUTO,
+		};
+		int res = vmaCreateImage(allocator, &imageInfo, &allocInfo, &image,
+								 &allocation, allocRes);
+		checkError(res, "Failed to create image");
+	}
 
 	void createSwapChain() {}
 	void recreateSwapChain() {}
