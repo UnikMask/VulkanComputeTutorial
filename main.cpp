@@ -139,6 +139,8 @@ static void checkError(int result, const std::string &message) {
 		throwErr("Ran out of host memory!");
 	case VK_ERROR_OUT_OF_DEVICE_MEMORY:
 		throwErr("Ran out of graphics device memory!");
+	case VK_ERROR_OUT_OF_POOL_MEMORY:
+		throwErr("Ran out of memory in the descriptor/command pool!");
 	default:
 		throwErr("Unknown error occured!");
 	}
@@ -280,7 +282,7 @@ class ParticleApplication {
 		createSyncObjects();
 		createGraphicsDescriptorSetLayout();
 		createCommandPools();
-		createComputeDescritporSetLayout();
+		createComputeDescriptorSetLayout();
 		createSwapChain();
 		createSwapChainImageViews();
 		createUniformBuffers();
@@ -289,6 +291,8 @@ class ParticleApplication {
 		createComputePool();
 
 		// Buffer/image dependent
+		createGraphicsDescriptorSets();
+		createComputeDescriptorSets();
 	}
 
 	void createInstance() {
@@ -932,7 +936,7 @@ class ParticleApplication {
 											  &graphicsDescriptorSetLayout);
 		checkError(res, "Failed to create graphics descriptor set layout");
 	}
-	void createComputeDescritporSetLayout() {
+	void createComputeDescriptorSetLayout() {
 		std::vector<VkDescriptorSetLayoutBinding> bindings = {
 			{
 				.binding = 0,
@@ -1104,13 +1108,106 @@ class ParticleApplication {
 			.poolSizeCount = (uint32_t)poolSizes.size(),
 			.pPoolSizes = poolSizes.data(),
 		};
+
+		int res =
+			vkCreateDescriptorPool(device, &info, nullptr, &computeDescriptorPool);
+		checkError(res, "Failed to create compute descriptor pool");
 	}
 
 	void createDepthResources() {}
 	void createColorResources() {}
 
-	void createGraphicsDescriptorSets() {}
-	void createComputeDescriptorSets() {}
+	void createGraphicsDescriptorSets() {
+		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
+												   graphicsDescriptorSetLayout);
+
+		VkDescriptorSetAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = renderDescriptorPool,
+			.descriptorSetCount = (uint32_t)MAX_FRAMES_IN_FLIGHT,
+			.pSetLayouts = layouts.data(),
+		};
+		renderDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+		int res = vkAllocateDescriptorSets(device, &allocInfo,
+										   renderDescriptorSets.data());
+		checkError(res, "Failed to allocate render descriptor sets");
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			VkDescriptorBufferInfo buffInfo{
+				.buffer = uniformBuffers[i],
+				.range = sizeof(UniformBufferObject),
+			};
+			std::vector<VkWriteDescriptorSet> descriptorWrites = {
+				{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				 .dstSet = renderDescriptorSets[i],
+				 .dstBinding = 0,
+				 .descriptorCount = 1,
+				 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				 .pBufferInfo = &buffInfo}};
+			vkUpdateDescriptorSets(device, (uint32_t)descriptorWrites.size(),
+								   descriptorWrites.data(), 0, nullptr);
+		}
+	}
+
+	void createComputeDescriptorSets() {
+		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
+												   computeDescriptorSetLayout);
+
+		VkDescriptorSetAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+			.descriptorPool = computeDescriptorPool,
+			.descriptorSetCount = (uint32_t)MAX_FRAMES_IN_FLIGHT,
+			.pSetLayouts = layouts.data(),
+		};
+		computeDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+		int res = vkAllocateDescriptorSets(device, &allocInfo,
+										   computeDescriptorSets.data());
+		checkError(res, "Failed to allocate compute descriptor sets");
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			VkDescriptorBufferInfo uniformBufferInfo{
+				.buffer = uniformBuffers[i],
+				.range = sizeof(UniformBufferObject),
+			};
+			VkDescriptorBufferInfo particlesInInfo{
+				.buffer = storageBuffers[(i - 1) % MAX_FRAMES_IN_FLIGHT],
+				.range = sizeof(Particle) * PARTICLE_COUNT,
+			};
+			VkDescriptorBufferInfo particlesOutInfo{
+				.buffer = storageBuffers[i],
+				.range = sizeof(Particle) * PARTICLE_COUNT,
+			};
+
+			std::vector<VkWriteDescriptorSet> descriptorWrites = {
+				{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.dstSet = computeDescriptorSets[i],
+					.dstBinding = 0,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+					.pBufferInfo = &uniformBufferInfo,
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.dstSet = computeDescriptorSets[i],
+					.dstBinding = 1,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					.pBufferInfo = &particlesInInfo,
+				},
+				{
+					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+					.dstSet = computeDescriptorSets[i],
+					.dstBinding = 2,
+					.descriptorCount = 1,
+					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+					.pBufferInfo = &particlesOutInfo,
+				},
+			};
+			vkUpdateDescriptorSets(device, (uint32_t)descriptorWrites.size(),
+								   descriptorWrites.data(), 0, nullptr);
+		}
+	}
 
 	void createGraphicsPipeline() {}
 	void createComputePipeline() {}
