@@ -146,6 +146,10 @@ class ParticleApplication {
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		vmaDestroyAllocator(allocator);
+
+		vkDestroyDescriptorSetLayout(device, graphicsDescriptorSetLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
+
 		vkDestroyDevice(device, nullptr);
 #if !(NDEBUG)
 		DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
@@ -244,6 +248,10 @@ class ParticleApplication {
 		pickPhysicalDevice();
 		createLogicalDevice();
 		createAllocator();
+
+		createGraphicsDescriptorSetLayout();
+		createComputeDescritporSetLayout();
+
 		createSwapChain();
 		createSwapChainImageViews();
 	}
@@ -872,8 +880,57 @@ class ParticleApplication {
 		}
 	}
 
-	void createGraphicsDescriptorSetLayout() {}
-	void createComputeDescritporSetLayout() {}
+	void createGraphicsDescriptorSetLayout() {
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {{
+			.binding = 0,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+			.pImmutableSamplers = nullptr,
+		}};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.bindingCount = (uint32_t)bindings.size(),
+			.pBindings = bindings.data(),
+		};
+		int res = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+											  &graphicsDescriptorSetLayout);
+		checkError(res, "Failed to create graphics descriptor set layout");
+	}
+	void createComputeDescritporSetLayout() {
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {
+			{
+				.binding = 0,
+				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+				.pImmutableSamplers = nullptr,
+			},
+			{
+				.binding = 1,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.pImmutableSamplers = nullptr,
+
+			},
+			{
+				.binding = 2,
+				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+				.descriptorCount = 1,
+				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+				.pImmutableSamplers = nullptr,
+
+			}};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.bindingCount = (uint32_t)bindings.size(),
+			.pBindings = bindings.data(),
+		};
+		int res = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+											  &computeDescriptorSetLayout);
+		checkError(res, "Failed to create compute descriptor set layout");
+	}
 
 	void createUniformBuffers() {}
 	void createStorageBuffers() {}
