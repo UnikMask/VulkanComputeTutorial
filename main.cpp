@@ -47,6 +47,10 @@ const VkApplicationInfo APP_INFO{
 	.apiVersion = VK_API_VERSION_1_0,
 };
 
+struct UniformBufferObject {
+	float deltaTime;
+};
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 	VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 	VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -140,6 +144,10 @@ class ParticleApplication {
 	}
 
 	~ParticleApplication() {
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			vmaDestroyBuffer(allocator, uniformBuffers[i],
+							 uniformBuffersMemories[i]);
+		}
 		vkDestroyCommandPool(device, graphicsPool, nullptr);
 		vkDestroyCommandPool(device, transferPool, nullptr);
 		vkDestroyCommandPool(device, computePool, nullptr);
@@ -260,6 +268,9 @@ class ParticleApplication {
 		createComputeDescritporSetLayout();
 		createSwapChain();
 		createSwapChainImageViews();
+		createUniformBuffers();
+
+		// Buffer/image dependent
 	}
 
 	void createInstance() {
@@ -1009,7 +1020,27 @@ class ParticleApplication {
 		}
 	}
 
-	void createUniformBuffers() {}
+	void createUniformBuffers() {
+		VkDeviceSize bufferc = sizeof(UniformBufferObject);
+		uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+		uniformBuffersMemories.resize(MAX_FRAMES_IN_FLIGHT);
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			BufferCreateInfo bufferInfo{
+				.size = bufferc,
+				.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+				.allocFlags =
+					VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+					VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			};
+			VmaAllocationInfo allocRes;
+			createBuffer(bufferInfo, uniformBuffers[i], uniformBuffersMemories[i],
+						 &allocRes);
+			uniformBuffersMapped[i] = allocRes.pMappedData;
+		}
+	}
+
 	void createStorageBuffers() {}
 
 	void createGraphicsPool() {}
