@@ -584,6 +584,7 @@ class ParticleApplication {
 	}
 
 	void createSwapChain() {}
+
 	void recreateSwapChain() {}
 	void createSwapChainImageViews() {}
 
@@ -610,7 +611,11 @@ class ParticleApplication {
 
 	void createFrameBuffers() {}
 
-	void mainLoop() {}
+	void mainLoop() {
+		while (!glfwWindowShouldClose(window)) {
+			glfwPollEvents();
+		}
+	}
 };
 
 int main() {
