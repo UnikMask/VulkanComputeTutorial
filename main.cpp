@@ -1479,12 +1479,91 @@ class ParticleApplication {
 		}
 	}
 
-	void drawFrame() {}
+	void drawFrame() {
+		vkWaitForFences(device, 1, &graphicsInFlightFences[currFrame], VK_TRUE,
+						UINT64_MAX);
+
+		uint32_t imageIndex;
+		int res = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX,
+										imageAvailableSemaphores[currFrame],
+										VK_NULL_HANDLE, &imageIndex);
+		if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+			recreateSwapChain();
+			return;
+		}
+		checkError(res, "Failed to acquire next swap chain image");
+		vkResetFences(device, 1, &graphicsInFlightFences[currFrame]);
+
+		res = vkResetCommandBuffer(commandBuffers[currFrame], 0);
+		checkError(res, "Failed to reset current frame command buffer");
+		recordCommandBuffer(commandBuffers[currFrame], imageIndex);
+
+		VkPipelineStageFlags waitStages[] = {
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+		};
+		VkSubmitInfo submitInfo{
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.waitSemaphoreCount = 1,
+			.pWaitSemaphores = &imageAvailableSemaphores[currFrame],
+			.pWaitDstStageMask = waitStages,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &commandBuffers[currFrame],
+			.signalSemaphoreCount = 1,
+			.pSignalSemaphores = &renderFinishedSemaphores[currFrame],
+		};
+		res = vkQueueSubmit(graphicsQueue, 1, &submitInfo,
+							graphicsInFlightFences[currFrame]);
+		checkError(res, "Failed to submit graphics operation set");
+
+		VkPresentInfoKHR presentInfo{
+			.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+			.waitSemaphoreCount = 1,
+			.pWaitSemaphores = &renderFinishedSemaphores[currFrame],
+			.swapchainCount = 1,
+			.pSwapchains = &swapChain,
+			.pImageIndices = &imageIndex,
+		};
+		res = vkQueuePresentKHR(presentQueue, &presentInfo);
+		if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR ||
+			frameBufferResized) {
+			frameBufferResized = false;
+			recreateSwapChain();
+		}
+		checkError(res, "Failed to present swap chain");
+		currFrame = (currFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+	}
+
+	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image_i) {
+		VkCommandBufferBeginInfo beginInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+		int res = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+		checkError(res, "Failed to begin graphics command buffer recording");
+
+		std::vector<VkClearValue> clearValues{{.color = {{0, 0, 0}}},
+											  {.depthStencil = {1, 0}}};
+		VkRenderPassBeginInfo renderPassInfo{
+			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+			.renderPass = renderPass,
+			.framebuffer = swapChainFramebuffers[image_i],
+			.renderArea = {.extent = swapChainExtent},
+			.clearValueCount = (uint32_t)clearValues.size(),
+			.pClearValues = clearValues.data(),
+		};
+		vkCmdBeginRenderPass(commandBuffer, &renderPassInfo,
+							 VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdSetViewport(commandBuffer, 0, 1, &viewport);
+		vkCmdSetScissor(commandBuffer, 0, 1, &scissor);
+		vkCmdEndRenderPass(commandBuffer);
+		res = vkEndCommandBuffer(commandBuffer);
+		checkError(res, "Failed to end graphics command buffer recording");
+	}
 
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
+			drawFrame();
 		}
+		vkDeviceWaitIdle(device);
 	}
 };
 
