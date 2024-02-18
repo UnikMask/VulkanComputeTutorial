@@ -35,7 +35,7 @@
 const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
 const int MAX_FRAMES_IN_FLIGHT = 2;
-const uint32_t PARTICLE_COUNT = 1024;
+const uint32_t PARTICLE_COUNT = 4096;
 
 const std::vector<const char *> VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 
@@ -279,10 +279,6 @@ class ParticleApplication {
 	VkDescriptorPool computeDescriptorPool;
 	std::vector<VkDescriptorSet> computeDescriptorSets;
 
-	VkImage depthImage;
-	VmaAllocation depthImageMemory;
-	VkImageView depthImageView;
-
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 	VkImage colorImage;
 	VmaAllocation colorImageMemory;
@@ -432,7 +428,7 @@ class ParticleApplication {
 		}
 		physicalDevice = *candidate;
 
-		// Pick multisampling properties
+		// Pick max multisampling amount available on device
 		VkPhysicalDeviceProperties props;
 		vkGetPhysicalDeviceProperties(*candidate, &props);
 		VkSampleCountFlags counts = props.limits.framebufferColorSampleCounts &
@@ -867,7 +863,6 @@ class ParticleApplication {
 			.extent = swapChainExtent,
 		};
 		createSwapChainImageViews();
-		createDepthResources();
 		createColorResources();
 		createRenderPass();
 
@@ -885,8 +880,6 @@ class ParticleApplication {
 		vkDestroyRenderPass(device, renderPass, nullptr);
 		vkDestroyImageView(device, colorImageView, nullptr);
 		vmaDestroyImage(allocator, colorImage, colorImageMemory);
-		vkDestroyImageView(device, depthImageView, nullptr);
-		vmaDestroyImage(allocator, depthImage, depthImageMemory);
 		for (size_t i = 0; i < swapChainImages.size(); i++) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
@@ -951,22 +944,6 @@ class ParticleApplication {
 			.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		};
 
-		VkAttachmentDescription depthAttachment{
-			.format = pickDepthFormat(),
-			.samples = msaaSamples,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-			.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		};
-
-		VkAttachmentReference depthAttachmentRef{
-			.attachment = 1,
-			.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-		};
-
 		VkAttachmentDescription colorResolveAttachment{
 			.format = swapChainFormat,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
@@ -978,7 +955,7 @@ class ParticleApplication {
 			.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 		};
 		VkAttachmentReference colorResolveAttachmentRef{
-			.attachment = 2,
+			.attachment = 1,
 			.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		};
 
@@ -987,7 +964,6 @@ class ParticleApplication {
 			.colorAttachmentCount = 1,
 			.pColorAttachments = &colorAttachmentRef,
 			.pResolveAttachments = &colorResolveAttachmentRef,
-			.pDepthStencilAttachment = &depthAttachmentRef,
 		};
 		VkSubpassDependency dependency{
 			.srcSubpass = VK_SUBPASS_EXTERNAL,
@@ -1002,7 +978,6 @@ class ParticleApplication {
 		};
 		std::vector<VkAttachmentDescription> attachments = {
 			colorAttachment,
-			depthAttachment,
 			colorResolveAttachment,
 		};
 
@@ -1019,36 +994,11 @@ class ParticleApplication {
 		checkError(res, "Failed to create render pass");
 	}
 
-	VkFormat pickDepthFormat() {
-		return pickSupportedFormat(
-			{VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT,
-			 VK_FORMAT_D32_SFLOAT},
-			VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
-	}
-
-	VkFormat pickSupportedFormat(const std::vector<VkFormat> &candidates,
-								 VkImageTiling tiling,
-								 VkFormatFeatureFlags features) {
-		for (auto &format : candidates) {
-			VkFormatProperties props;
-			vkGetPhysicalDeviceFormatProperties(physicalDevice, format, &props);
-			VkFormatFeatureFlags formatFeatures = (tiling == VK_IMAGE_TILING_OPTIMAL)
-													  ? props.optimalTilingFeatures
-													  : props.linearTilingFeatures;
-			if (features & formatFeatures) {
-				return format;
-			}
-		}
-		checkError(VK_ERROR_FORMAT_NOT_SUPPORTED,
-				   "Failed to pick a supported format");
-		return VK_FORMAT_UNDEFINED;
-	}
-
 	void createFramebuffers() {
 		swapChainFramebuffers.resize(swapChainImages.size());
 
 		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
-			std::vector<VkImageView> imageViews = {colorImageView, depthImageView,
+			std::vector<VkImageView> imageViews = {colorImageView,
 												   swapChainImageViews[i]};
 			VkFramebufferCreateInfo framebufferInfo{
 				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -1371,44 +1321,6 @@ class ParticleApplication {
 			   format == VK_FORMAT_D24_UNORM_S8_UINT;
 	}
 
-	void createDepthResources() {
-		VkFormat format = pickDepthFormat();
-		ImageCreateInfo depthInfo{
-			.extent = {.width = swapChainExtent.width,
-					   .height = swapChainExtent.height,
-					   .depth = 1},
-			.format = format,
-			.tiling = VK_IMAGE_TILING_OPTIMAL,
-			.numSamples = msaaSamples,
-			.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT};
-		createImage(depthInfo, depthImage, depthImageMemory, nullptr);
-
-		ImageViewInfo viewInfo{
-			.image = depthImage,
-			.format = format,
-			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-								 .baseMipLevel = 0,
-								 .levelCount = 1,
-								 .baseArrayLayer = 0,
-								 .layerCount = 1}};
-		if (hasStencilComponent(viewInfo.format)) {
-			viewInfo.subresourceRange.aspectMask |= VK_IMAGE_ASPECT_STENCIL_BIT;
-		}
-		depthImageView = createImageView(viewInfo);
-
-		SingleTimeCommand cmd = beginSingleTimeCommand(graphicsPool, graphicsQueue);
-		LayoutTransitionInfo transitionInfo{
-			.image = depthImage,
-			.format = format,
-			.subresourceRange = viewInfo.subresourceRange,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-		transitionImageLayout(transitionInfo, cmd.commandBuffer);
-		cmd.flush();
-	}
-
 	void createColorResources() {
 		ImageCreateInfo msaaInfo{
 			.extent = {.width = swapChainExtent.width,
@@ -1600,12 +1512,6 @@ class ParticleApplication {
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 			.attachmentCount = 1,
 			.pAttachments = &colorBlendAttachment};
-		VkPipelineDepthStencilStateCreateInfo depthStencil{
-			.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-			.depthTestEnable = VK_TRUE,
-			.depthWriteEnable = VK_TRUE,
-			.depthCompareOp = VK_COMPARE_OP_LESS,
-			.stencilTestEnable = VK_FALSE};
 		VkPipelineMultisampleStateCreateInfo multisampling{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
 			.rasterizationSamples = msaaSamples,
@@ -1620,7 +1526,6 @@ class ParticleApplication {
 			.pViewportState = &viewportInfo,
 			.pRasterizationState = &rasterization,
 			.pMultisampleState = &multisampling,
-			//.pDepthStencilState = &depthStencil,
 			.pColorBlendState = &colorBlend,
 			.pDynamicState = &dynamicState,
 			.layout = graphicsPipelineLayout,
@@ -1639,7 +1544,7 @@ class ParticleApplication {
 		swapChainFramebuffers.resize(swapChainImages.size());
 
 		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
-			std::vector<VkImageView> attachments = {colorImageView, depthImageView,
+			std::vector<VkImageView> attachments = {colorImageView,
 													swapChainImageViews[i]};
 			VkFramebufferCreateInfo framebufferInfo{
 				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -1718,8 +1623,7 @@ class ParticleApplication {
 		int res = vkBeginCommandBuffer(commandBuffer, &beginInfo);
 		checkError(res, "Failed to begin draw command buffer recording");
 
-		std::vector<VkClearValue> clearValues{{.color = {{0, 0, 0}}},
-											  {.depthStencil = {1, 0}}};
+		std::vector<VkClearValue> clearValues{{.color = {{0, 0, 0}}}};
 		VkRenderPassBeginInfo renderPassInfo{
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass = renderPass,
