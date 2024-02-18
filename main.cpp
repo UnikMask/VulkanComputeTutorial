@@ -168,6 +168,9 @@ class ParticleApplication {
 		vkDestroyCommandPool(device, graphicsPool, nullptr);
 		vkDestroyCommandPool(device, transferPool, nullptr);
 		vkDestroyCommandPool(device, computePool, nullptr);
+
+		vkDestroyImageView(device, colorImageView, nullptr);
+		vmaDestroyImage(allocator, colorImage, colorImageMemory);
 		vkDestroyImageView(device, depthImageView, nullptr);
 		vmaDestroyImage(allocator, depthImage, depthImageMemory);
 		for (auto &imageView : swapChainImageViews) {
@@ -296,6 +299,7 @@ class ParticleApplication {
 		createGraphicsDescriptorSets();
 		createComputeDescriptorSets();
 		createDepthResources();
+		createColorResources();
 	}
 
 	void createInstance() {
@@ -809,7 +813,7 @@ class ParticleApplication {
 	struct ImageViewInfo {
 		VkImage image;
 		VkFormat format;
-		VkImageViewType viewType;
+		VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
 		VkImageSubresourceRange subresourceRange;
 	};
 
@@ -1270,7 +1274,28 @@ class ParticleApplication {
 		cmd.flush();
 	}
 
-	void createColorResources() {}
+	void createColorResources() {
+		ImageCreateInfo msaaInfo{
+			.extent = {.width = swapChainExtent.width,
+					   .height = swapChainExtent.height,
+					   .depth = 1},
+			.format = swapChainFormat,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.numSamples = msaaSamples,
+			.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
+					 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
+		};
+		createImage(msaaInfo, colorImage, colorImageMemory, nullptr);
+
+		ImageViewInfo viewInfo{
+			.image = colorImage,
+			.format = msaaInfo.format,
+			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+								 .levelCount = 1,
+								 .layerCount = 1}};
+		colorImageView = createImageView(viewInfo);
+	}
 
 	void createGraphicsDescriptorSets() {
 		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
@@ -1387,6 +1412,8 @@ class ParticleApplication {
 			checkError(res, "Failed to create swap chain framebuffer");
 		}
 	}
+
+	void drawFrame() {}
 
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
