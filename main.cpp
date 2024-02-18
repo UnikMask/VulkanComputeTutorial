@@ -209,6 +209,8 @@ class ParticleApplication {
 		vkDestroyCommandPool(device, computePool, nullptr);
 		vkDestroyDescriptorSetLayout(device, graphicsDescriptorSetLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
+		vkDestroyPipeline(device, computePipeline, nullptr);
+		vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
 		vmaDestroyAllocator(allocator);
 		destroySyncObjects();
 
@@ -317,6 +319,7 @@ class ParticleApplication {
 		createGraphicsPool();
 		createComputePool();
 		createGraphicsCommandBuffers();
+		createComputePipeline();
 		createAllocator();
 
 		// Allocator dependents
@@ -1035,29 +1038,21 @@ class ParticleApplication {
 
 	void createComputeDescriptorSetLayout() {
 		std::vector<VkDescriptorSetLayoutBinding> bindings = {
-			{
-				.binding = 0,
-				.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-				.pImmutableSamplers = nullptr,
-			},
-			{
-				.binding = 1,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				.pImmutableSamplers = nullptr,
-
-			},
-			{
-				.binding = 2,
-				.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-				.descriptorCount = 1,
-				.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
-				.pImmutableSamplers = nullptr,
-
-			}};
+			{.binding = 0,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			 .descriptorCount = 1,
+			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			 .pImmutableSamplers = nullptr},
+			{.binding = 1,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			 .descriptorCount = 1,
+			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			 .pImmutableSamplers = nullptr},
+			{.binding = 2,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+			 .descriptorCount = 1,
+			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			 .pImmutableSamplers = nullptr}};
 		VkDescriptorSetLayoutCreateInfo layoutInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.bindingCount = (uint32_t)bindings.size(),
@@ -1538,7 +1533,33 @@ class ParticleApplication {
 		vkDestroyShaderModule(device, vertShader, nullptr);
 	}
 
-	void createComputePipeline() {}
+	void createComputePipeline() {
+		VkShaderModule compShaderModule;
+		int res = createShaderModule(readFile("shaders/tutorial.comp.spv"),
+									 compShaderModule);
+		checkError(res, "Failed to create compute shader module");
+		VkPipelineShaderStageCreateInfo computeShaderStageInfo{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
+			.module = compShaderModule,
+			.pName = "main"};
+		VkPipelineLayoutCreateInfo computeLayoutInfo{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+			.setLayoutCount = 1,
+			.pSetLayouts = &computeDescriptorSetLayout,
+		};
+		res = vkCreatePipelineLayout(device, &computeLayoutInfo, nullptr,
+									 &computePipelineLayout);
+		VkComputePipelineCreateInfo computeInfo{
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+			.stage = computeShaderStageInfo,
+			.layout = computePipelineLayout};
+		res = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo,
+									   nullptr, &computePipeline);
+		checkError(res, "Failed to create compute pipeline");
+
+		vkDestroyShaderModule(device, compShaderModule, nullptr);
+	}
 
 	void createFrameBuffers() {
 		swapChainFramebuffers.resize(swapChainImages.size());
