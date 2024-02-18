@@ -128,6 +128,7 @@ static void checkError(int result, const std::string &message) {
 	switch (result) {
 	case VK_SUCCESS:
 	case VK_INCOMPLETE:
+	case VK_SUBOPTIMAL_KHR:
 		break;
 	case VK_ERROR_INITIALIZATION_FAILED:
 		throwErr("Vulkan loader not found!");
@@ -149,6 +150,7 @@ static void checkError(int result, const std::string &message) {
 class ParticleApplication {
   public:
 	bool frameBufferResized;
+	uint32_t currFrame;
 
 	void run() { mainLoop(); }
 
@@ -158,30 +160,28 @@ class ParticleApplication {
 	}
 
 	~ParticleApplication() {
-		vkDestroyDescriptorPool(device, renderDescriptorPool, nullptr);
-		vkDestroyDescriptorPool(device, computeDescriptorPool, nullptr);
+		// Swap chain dependents
+		cleanupSwapChainDependents();
+
+		// Sync dependents
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			vmaDestroyBuffer(allocator, uniformBuffers[i],
 							 uniformBuffersMemories[i]);
 			vmaDestroyBuffer(allocator, storageBuffers[i], storageBufferMemories[i]);
 		}
+
+		// Device dependents
+		vkDestroyDescriptorPool(device, renderDescriptorPool, nullptr);
+		vkDestroyDescriptorPool(device, computeDescriptorPool, nullptr);
 		vkDestroyCommandPool(device, graphicsPool, nullptr);
 		vkDestroyCommandPool(device, transferPool, nullptr);
 		vkDestroyCommandPool(device, computePool, nullptr);
-
-		vkDestroyImageView(device, colorImageView, nullptr);
-		vmaDestroyImage(allocator, colorImage, colorImageMemory);
-		vkDestroyImageView(device, depthImageView, nullptr);
-		vmaDestroyImage(allocator, depthImage, depthImageMemory);
-		for (auto &imageView : swapChainImageViews) {
-			vkDestroyImageView(device, imageView, nullptr);
-		}
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
 		vkDestroyDescriptorSetLayout(device, graphicsDescriptorSetLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
+		vmaDestroyAllocator(allocator);
 		destroySyncObjects();
 
-		vmaDestroyAllocator(allocator);
+		// Instance dependents
 		vkDestroyDevice(device, nullptr);
 #if !(NDEBUG)
 		DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
@@ -283,23 +283,25 @@ class ParticleApplication {
 		createLogicalDevice();
 
 		// Device dependents
-		createAllocator();
-		createSyncObjects();
 		createGraphicsDescriptorSetLayout();
 		createCommandPools();
 		createComputeDescriptorSetLayout();
-		createSwapChain();
-		createSwapChainImageViews();
-		createUniformBuffers();
-		createStorageBuffers();
 		createGraphicsPool();
 		createComputePool();
+		createGraphicsCommandBuffers();
+		createSyncObjects();
+		createAllocator();
+
+		// Allocator dependents
+		createUniformBuffers();
+		createStorageBuffers();
 
 		// Buffer/image/swapchain dependent
 		createGraphicsDescriptorSets();
 		createComputeDescriptorSets();
-		createDepthResources();
-		createColorResources();
+
+		// Swap chain dependents
+		createSwapChainDependents();
 	}
 
 	void createInstance() {
@@ -634,7 +636,6 @@ class ParticleApplication {
 		VkImageUsageFlags usage = 0;
 		VmaAllocationCreateFlags allocFlags = 0;
 	};
-
 	void createImage(ImageCreateInfo &info, VkImage &image,
 					 VmaAllocation &allocation, VmaAllocationInfo *allocRes) {
 
@@ -670,6 +671,7 @@ class ParticleApplication {
 								 &allocation, allocRes);
 		checkError(res, "Failed to create image");
 	}
+
 	struct LayoutTransitionInfo {
 		VkImage image;
 		VkFormat format;
@@ -677,7 +679,6 @@ class ParticleApplication {
 		VkImageLayout oldLayout;
 		VkImageLayout newLayout;
 	};
-
 	void transitionImageLayout(LayoutTransitionInfo info, VkCommandBuffer &ctx) {
 		VkImageMemoryBarrier2 barrier{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
@@ -806,8 +807,58 @@ class ParticleApplication {
 	}
 
 	void recreateSwapChain() {
-		vkDestroySwapchainKHR(device, swapChain, nullptr);
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(window, &width, &height);
+
+		if (!width || !height) {
+			glfwGetFramebufferSize(window, &width, &height);
+			glfwWaitEvents();
+		}
+		vkDeviceWaitIdle(device);
+		cleanupSwapChainDependents();
+		createSwapChainDependents();
+	}
+
+	void createSwapChainDependents() {
 		createSwapChain();
+
+		// Swapchain dependents
+		viewport = {
+			.y = (float)swapChainExtent.height,
+			.width = (float)swapChainExtent.width,
+			.height = -(float)swapChainExtent.height,
+			.maxDepth = 1.0f,
+		};
+		scissor = {
+			.offset = {0, 0},
+			.extent = swapChainExtent,
+		};
+		createSwapChainImageViews();
+		createDepthResources();
+		createColorResources();
+		createRenderPass();
+
+		// Render pass dependents
+		createFrameBuffers();
+	}
+
+	void cleanupSwapChainDependents() {
+		// Render pass dependents
+		for (size_t i = 0; i < swapChainImages.size(); i++) {
+			vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
+		}
+
+		// Swap chain dependents
+		vkDestroyRenderPass(device, renderPass, nullptr);
+		vkDestroyImageView(device, colorImageView, nullptr);
+		vmaDestroyImage(allocator, colorImage, colorImageMemory);
+		vkDestroyImageView(device, depthImageView, nullptr);
+		vmaDestroyImage(allocator, depthImage, depthImageMemory);
+		for (size_t i = 0; i < swapChainImages.size(); i++) {
+			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
+		}
+
+		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
 
 	struct ImageViewInfo {
@@ -895,7 +946,7 @@ class ParticleApplication {
 		};
 		VkAttachmentReference colorResolveAttachmentRef{
 			.attachment = 2,
-			.layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 		};
 
 		VkSubpassDescription subpass{
@@ -1212,6 +1263,20 @@ class ParticleApplication {
 		checkError(res, "Failed to create graphics descriptor pool");
 	}
 
+	void createGraphicsCommandBuffers() {
+		commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		VkCommandBufferAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = graphicsPool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = (uint32_t)commandBuffers.size(),
+		};
+
+		int res =
+			vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data());
+		checkError(res, "Failed to create graphics command buffers");
+	}
+
 	void createComputePool() {
 		std::vector<VkDescriptorPoolSize> poolSizes{
 			{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1390,6 +1455,7 @@ class ParticleApplication {
 	}
 
 	void createGraphicsPipeline() {}
+
 	void createComputePipeline() {}
 
 	void createFrameBuffers() {
