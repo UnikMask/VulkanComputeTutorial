@@ -186,9 +186,11 @@ static void checkError(int result, const std::string &message) {
 
 class ParticleApplication {
   public:
-	bool frameBufferResized;
+	bool frameBufferResized = false;
+	bool firstFrame = true;
 	uint32_t currFrame = 0;
-	std::chrono::time_point<std::chrono::high_resolution_clock> currentTime;
+	std::chrono::time_point<std::chrono::high_resolution_clock> currentTime =
+		std::chrono::high_resolution_clock::now();
 
 	void run() { mainLoop(); }
 
@@ -1105,7 +1107,7 @@ class ParticleApplication {
 	void createSyncObjects() {
 		graphicsInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 		computeInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-		computeFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+		computeFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT * 2);
 		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
 		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
 
@@ -1128,6 +1130,10 @@ class ParticleApplication {
 			res = vkCreateSemaphore(device, &info, nullptr,
 									&computeFinishedSemaphores[i]);
 			checkError(res, "Failed to create compute finished semaphore");
+			res = vkCreateSemaphore(
+				device, &info, nullptr,
+				&computeFinishedSemaphores[i + MAX_FRAMES_IN_FLIGHT]);
+			checkError(res, "Failed to create compute finished semaphore");
 			res = vkCreateSemaphore(device, &info, nullptr,
 									&imageAvailableSemaphores[i]);
 			checkError(res, "Failed to create image available semaphore");
@@ -1140,6 +1146,9 @@ class ParticleApplication {
 			vkDestroyFence(device, computeInFlightFences[i], nullptr);
 			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
 			vkDestroySemaphore(device, computeFinishedSemaphores[i], nullptr);
+			vkDestroySemaphore(device,
+							   computeFinishedSemaphores[i + MAX_FRAMES_IN_FLIGHT],
+							   nullptr);
 			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
 		}
 	}
@@ -1227,11 +1236,11 @@ class ParticleApplication {
 	void updateUniformBuffer(uint32_t frame_i) {
 		UniformBufferObject ubo{
 			.deltaTime =
-				(float)
-					std::chrono::duration<float, std::chrono::milliseconds::period>(
-						std::chrono::high_resolution_clock::now() - currentTime)
-						.count(),
+				(float)std::chrono::duration<float, std::chrono::seconds::period>(
+					std::chrono::high_resolution_clock::now() - currentTime)
+					.count(),
 		};
+		currentTime = std::chrono::high_resolution_clock::now();
 
 		VkMemoryPropertyFlags allocMemoryProperties;
 		vmaGetAllocationMemoryProperties(allocator, uniformBuffersMemories[frame_i],
@@ -1272,7 +1281,7 @@ class ParticleApplication {
 			float theta = rndDist(rndEngine) * 2 * 3.14159265358979323846;
 			float x = r * cos(theta) * HEIGHT / WIDTH, y = r * sin(theta);
 			particle.position = {x, y};
-			particle.velocity = glm::normalize(glm::vec2(x, y)) * 0.025f;
+			particle.velocity = glm::normalize(glm::vec2(x, y)) * 0.75f;
 			particle.color = glm::vec4(rndDist(rndEngine), rndDist(rndEngine),
 									   rndDist(rndEngine), 1);
 		}
@@ -1448,23 +1457,24 @@ class ParticleApplication {
 		checkError(res, "Failed to allocate compute descriptor sets");
 
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			size_t i_next = (i + 1) % MAX_FRAMES_IN_FLIGHT;
 			VkDescriptorBufferInfo uniformBufferInfo{
-				.buffer = uniformBuffers[i],
+				.buffer = uniformBuffers[i_next],
 				.range = sizeof(UniformBufferObject),
 			};
 			VkDescriptorBufferInfo particlesInInfo{
-				.buffer = storageBuffers[(i - 1) % MAX_FRAMES_IN_FLIGHT],
+				.buffer = storageBuffers[i],
 				.range = sizeof(Particle) * PARTICLE_COUNT,
 			};
 			VkDescriptorBufferInfo particlesOutInfo{
-				.buffer = storageBuffers[i],
+				.buffer = storageBuffers[i_next],
 				.range = sizeof(Particle) * PARTICLE_COUNT,
 			};
 
 			std::vector<VkWriteDescriptorSet> descriptorWrites = {
 				{
 					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = computeDescriptorSets[i],
+					.dstSet = computeDescriptorSets[i_next],
 					.dstBinding = 0,
 					.descriptorCount = 1,
 					.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1472,7 +1482,7 @@ class ParticleApplication {
 				},
 				{
 					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = computeDescriptorSets[i],
+					.dstSet = computeDescriptorSets[i_next],
 					.dstBinding = 1,
 					.descriptorCount = 1,
 					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1480,7 +1490,7 @@ class ParticleApplication {
 				},
 				{
 					.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-					.dstSet = computeDescriptorSets[i],
+					.dstSet = computeDescriptorSets[i_next],
 					.dstBinding = 2,
 					.descriptorCount = 1,
 					.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1652,14 +1662,31 @@ class ParticleApplication {
 
 		// Record command buffers for draw and compute
 		checkError(res, "Failed to reset current frame compute command buffer");
+		vkResetCommandBuffer(computeCommandBuffers[currFrame], 0);
 		recordComputeCommandBuffer(computeCommandBuffers[currFrame]);
+
+		VkPipelineStageFlags computeWaitStages[] = {
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT};
+		std::vector<VkSemaphore> signalSemaphores{
+			computeFinishedSemaphores[currFrame],
+			computeFinishedSemaphores[MAX_FRAMES_IN_FLIGHT +
+									  ((currFrame + 1) % MAX_FRAMES_IN_FLIGHT)],
+		};
 		VkSubmitInfo computeSubmitInfo{
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.waitSemaphoreCount = 1,
+			.pWaitSemaphores =
+				&computeFinishedSemaphores[MAX_FRAMES_IN_FLIGHT + currFrame],
+			.pWaitDstStageMask = computeWaitStages,
 			.commandBufferCount = 1,
 			.pCommandBuffers = &computeCommandBuffers[currFrame],
-			.signalSemaphoreCount = 1,
-			.pSignalSemaphores = &computeFinishedSemaphores[currFrame],
+			.signalSemaphoreCount = (uint32_t)signalSemaphores.size(),
+			.pSignalSemaphores = signalSemaphores.data(),
 		};
+		if (firstFrame) {
+			computeSubmitInfo.waitSemaphoreCount = 0;
+			firstFrame = false;
+		}
 		res = vkQueueSubmit(computeQueue, 1, &computeSubmitInfo,
 							computeInFlightFences[currFrame]);
 		checkError(res, "Failed to submit compute command buffer");
@@ -1686,8 +1713,8 @@ class ParticleApplication {
 		recordDrawCommandBuffer(drawCommandBuffers[currFrame], imageIndex);
 
 		VkPipelineStageFlags waitStages[] = {
-			VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_VERTEX_INPUT_BIT};
 		std::vector<VkSemaphore> waitSemaphores{
 			imageAvailableSemaphores[currFrame],
 			computeFinishedSemaphores[currFrame]};
@@ -1777,7 +1804,6 @@ class ParticleApplication {
 			glfwPollEvents();
 			updateUniformBuffer(currFrame);
 			drawFrame();
-			currentTime = std::chrono::high_resolution_clock::now();
 		}
 		vkDeviceWaitIdle(device);
 	}
