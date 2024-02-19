@@ -42,8 +42,8 @@
 
 const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
-const int MAX_FRAMES_IN_FLIGHT = 2;
-const uint32_t PARTICLE_COUNT = 4096;
+const int MAX_FRAMES_IN_FLIGHT = 5;
+const uint32_t PARTICLE_COUNT = 8192;
 
 const std::vector<const char *> VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 
@@ -271,7 +271,8 @@ class ParticleApplication {
 	VkCommandPool graphicsPool;
 	VkCommandPool transferPool;
 	VkCommandPool computePool;
-	std::vector<VkCommandBuffer> commandBuffers;
+	std::vector<VkCommandBuffer> drawCommandBuffers;
+	std::vector<VkCommandBuffer> computeCommandBuffers;
 
 	std::vector<VkSemaphore> imageAvailableSemaphores;
 	std::vector<VkSemaphore> renderFinishedSemaphores;
@@ -325,9 +326,10 @@ class ParticleApplication {
 		createGraphicsDescriptorSetLayout();
 		createCommandPools();
 		createComputeDescriptorSetLayout();
-		createGraphicsPool();
-		createComputePool();
+		createGraphicsDescriptorPool();
+		createComputeDescriptorPool();
 		createGraphicsCommandBuffers();
+		createComputeCommandBuffers();
 		createComputePipeline();
 		createAllocator();
 
@@ -1225,9 +1227,10 @@ class ParticleApplication {
 	void updateUniformBuffer(uint32_t frame_i) {
 		UniformBufferObject ubo{
 			.deltaTime =
-				(float)std::chrono::duration<float, std::chrono::seconds::period>(
-					std::chrono::high_resolution_clock::now() - currentTime)
-					.count(),
+				(float)
+					std::chrono::duration<float, std::chrono::milliseconds::period>(
+						std::chrono::high_resolution_clock::now() - currentTime)
+						.count(),
 		};
 
 		VkMemoryPropertyFlags allocMemoryProperties;
@@ -1269,7 +1272,7 @@ class ParticleApplication {
 			float theta = rndDist(rndEngine) * 2 * 3.14159265358979323846;
 			float x = r * cos(theta) * HEIGHT / WIDTH, y = r * sin(theta);
 			particle.position = {x, y};
-			particle.velocity = glm::normalize(glm::vec2(x, y)) * 0.00025f;
+			particle.velocity = glm::normalize(glm::vec2(x, y)) * 0.025f;
 			particle.color = glm::vec4(rndDist(rndEngine), rndDist(rndEngine),
 									   rndDist(rndEngine), 1);
 		}
@@ -1307,7 +1310,7 @@ class ParticleApplication {
 		vmaDestroyBuffer(allocator, stagingBuffer, stagingBufferAlloc);
 	}
 
-	void createGraphicsPool() {
+	void createGraphicsDescriptorPool() {
 		std::vector<VkDescriptorPoolSize> poolSizes{
 			{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT}};
@@ -1324,20 +1327,20 @@ class ParticleApplication {
 	}
 
 	void createGraphicsCommandBuffers() {
-		commandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		drawCommandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
 		VkCommandBufferAllocateInfo allocInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
 			.commandPool = graphicsPool,
 			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-			.commandBufferCount = (uint32_t)commandBuffers.size(),
+			.commandBufferCount = (uint32_t)drawCommandBuffers.size(),
 		};
 
 		int res =
-			vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data());
+			vkAllocateCommandBuffers(device, &allocInfo, drawCommandBuffers.data());
 		checkError(res, "Failed to create graphics command buffers");
 	}
 
-	void createComputePool() {
+	void createComputeDescriptorPool() {
 		std::vector<VkDescriptorPoolSize> poolSizes{
 			{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT},
@@ -1354,6 +1357,19 @@ class ParticleApplication {
 		int res =
 			vkCreateDescriptorPool(device, &info, nullptr, &computeDescriptorPool);
 		checkError(res, "Failed to create compute descriptor pool");
+	}
+
+	void createComputeCommandBuffers() {
+		computeCommandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+		VkCommandBufferAllocateInfo allocInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = computePool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = MAX_FRAMES_IN_FLIGHT,
+		};
+		int res = vkAllocateCommandBuffers(device, &allocInfo,
+										   computeCommandBuffers.data());
+		checkError(res, "Failed to create compute command buffers");
 	}
 
 	inline bool hasStencilComponent(VkFormat format) {
@@ -1546,8 +1562,7 @@ class ParticleApplication {
 			.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
 			.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
 			.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
-			.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-							  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
+			.colorWriteMask = 0xf};
 		VkPipelineColorBlendStateCreateInfo colorBlend{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
 			.attachmentCount = 1,
@@ -1628,10 +1643,32 @@ class ParticleApplication {
 	}
 
 	void drawFrame() {
-		int res = vkWaitForFences(device, 1, &graphicsInFlightFences[currFrame],
+		// Compute command
+		int res = vkWaitForFences(device, 1, &computeInFlightFences[currFrame],
 								  VK_TRUE, UINT64_MAX);
+		checkError(res, "Failed to wait for compute in-flight fence");
+		res = vkResetFences(device, 1, &computeInFlightFences[currFrame]);
+		checkError(res, "Failed to reset compute in-flight fence");
+
+		// Record command buffers for draw and compute
+		checkError(res, "Failed to reset current frame compute command buffer");
+		recordComputeCommandBuffer(computeCommandBuffers[currFrame]);
+		VkSubmitInfo computeSubmitInfo{
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &computeCommandBuffers[currFrame],
+			.signalSemaphoreCount = 1,
+			.pSignalSemaphores = &computeFinishedSemaphores[currFrame],
+		};
+		res = vkQueueSubmit(computeQueue, 1, &computeSubmitInfo,
+							computeInFlightFences[currFrame]);
+		checkError(res, "Failed to submit compute command buffer");
+
+		res = vkWaitForFences(device, 1, &graphicsInFlightFences[currFrame], VK_TRUE,
+							  UINT64_MAX);
 		checkError(res, "Failed to wait for graphics in-flight fence");
 
+		// Draw command
 		uint32_t imageIndex;
 		res = vkAcquireNextImageKHR(device, swapChain, UINT64_MAX,
 									imageAvailableSemaphores[currFrame],
@@ -1644,25 +1681,27 @@ class ParticleApplication {
 		res = vkResetFences(device, 1, &graphicsInFlightFences[currFrame]);
 		checkError(res, "Failed to reset graphics in-flight fence");
 
-		res = vkResetCommandBuffer(commandBuffers[currFrame], 0);
+		res = vkResetCommandBuffer(drawCommandBuffers[currFrame], 0);
 		checkError(res, "Failed to reset current frame command buffer");
-		updateUniformBuffer(currFrame);
-		recordDrawCommandBuffer(commandBuffers[currFrame], imageIndex);
+		recordDrawCommandBuffer(drawCommandBuffers[currFrame], imageIndex);
 
 		VkPipelineStageFlags waitStages[] = {
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		};
-		VkSubmitInfo submitInfo{
+			VK_PIPELINE_STAGE_VERTEX_INPUT_BIT,
+			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+		std::vector<VkSemaphore> waitSemaphores{
+			imageAvailableSemaphores[currFrame],
+			computeFinishedSemaphores[currFrame]};
+		VkSubmitInfo drawSubmitInfo{
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-			.waitSemaphoreCount = 1,
-			.pWaitSemaphores = &imageAvailableSemaphores[currFrame],
+			.waitSemaphoreCount = (uint32_t)waitSemaphores.size(),
+			.pWaitSemaphores = waitSemaphores.data(),
 			.pWaitDstStageMask = waitStages,
 			.commandBufferCount = 1,
-			.pCommandBuffers = &commandBuffers[currFrame],
+			.pCommandBuffers = &drawCommandBuffers[currFrame],
 			.signalSemaphoreCount = 1,
 			.pSignalSemaphores = &renderFinishedSemaphores[currFrame],
 		};
-		res = vkQueueSubmit(graphicsQueue, 1, &submitInfo,
+		res = vkQueueSubmit(graphicsQueue, 1, &drawSubmitInfo,
 							graphicsInFlightFences[currFrame]);
 		checkError(res, "Failed to submit draw command buffer");
 
@@ -1717,9 +1756,26 @@ class ParticleApplication {
 		checkError(res, "Failed to end draw command buffer recording");
 	}
 
+	void recordComputeCommandBuffer(VkCommandBuffer commandBuffer) {
+		VkCommandBufferBeginInfo beginInfo{
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+		int res = vkBeginCommandBuffer(commandBuffer, &beginInfo);
+		checkError(res, "Failed to begin compute command buffer recording");
+
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+						  computePipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+								computePipelineLayout, 0, 1,
+								&computeDescriptorSets[currFrame], 0, nullptr);
+		vkCmdDispatch(commandBuffer, PARTICLE_COUNT / 256, 1, 1);
+		res = vkEndCommandBuffer(commandBuffer);
+		checkError(res, "Failed to end compute command buffer recording");
+	}
+
 	void mainLoop() {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
+			updateUniformBuffer(currFrame);
 			drawFrame();
 			currentTime = std::chrono::high_resolution_clock::now();
 		}

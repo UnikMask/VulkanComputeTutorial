@@ -25,6 +25,6 @@ void main() {
     uint index = gl_GlobalInvocationID.x;
     Particle particleIn = particlesIn[index];
 
-    particlesOut[index].position = particleIn.position + particleIn.velocity * ubo.deltaTime;
+    particlesOut[index].position = mod(vec2(1) + particleIn.position + particleIn.velocity * ubo.deltaTime, vec2(2)) - vec2(1);
     particlesOut[index].velocity = particleIn.velocity;
 }
