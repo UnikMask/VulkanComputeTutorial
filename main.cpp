@@ -2,6 +2,7 @@
 #include "glm/geometric.hpp"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -31,6 +32,13 @@
 #define WINDOW_NAME "Vulkan Tutorial"
 #define APP_NAME WINDOW_NAME
 #define WAYLAND_APP_ID "vulkan_tutorial"
+
+#define stagingBuffer(BUFFER_SIZE)                                                  \
+	BufferCreateInfo {                                                              \
+		.size = BUFFER_SIZE, .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,             \
+		.allocFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |      \
+					  VMA_ALLOCATION_CREATE_MAPPED_BIT                              \
+	}
 
 const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
@@ -180,6 +188,7 @@ class ParticleApplication {
   public:
 	bool frameBufferResized;
 	uint32_t currFrame = 0;
+	std::chrono::time_point<std::chrono::high_resolution_clock> currentTime;
 
 	void run() { mainLoop(); }
 
@@ -335,6 +344,7 @@ class ParticleApplication {
 
 		// Render pass dependents
 		createGraphicsPipeline();
+		currentTime = std::chrono::high_resolution_clock::now();
 	}
 
 	void createInstance() {
@@ -1197,9 +1207,12 @@ class ParticleApplication {
 
 		BufferCreateInfo bufferInfo{
 			.size = bufferc,
-			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-			.allocFlags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-						  VMA_ALLOCATION_CREATE_MAPPED_BIT,
+			.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+					 VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			.allocFlags =
+				VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+				VMA_ALLOCATION_CREATE_MAPPED_BIT |
+				VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT,
 		};
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			VmaAllocationInfo allocRes;
@@ -1207,6 +1220,38 @@ class ParticleApplication {
 						 &allocRes);
 			uniformBuffersMapped[i] = allocRes.pMappedData;
 		}
+	}
+
+	void updateUniformBuffer(uint32_t frame_i) {
+		UniformBufferObject ubo{
+			.deltaTime =
+				(float)std::chrono::duration<float, std::chrono::seconds::period>(
+					std::chrono::high_resolution_clock::now() - currentTime)
+					.count(),
+		};
+
+		VkMemoryPropertyFlags allocMemoryProperties;
+		vmaGetAllocationMemoryProperties(allocator, uniformBuffersMemories[frame_i],
+										 &allocMemoryProperties);
+		if (allocMemoryProperties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+			memcpy(uniformBuffersMapped[frame_i], &ubo, sizeof(UniformBufferObject));
+			return;
+		}
+
+		// If uniform buffer is not host visible, transfer change via a staging
+		// buffer.
+		VkBuffer stagingBuffer;
+		VmaAllocation stagingAlloc;
+		VmaAllocationInfo allocRes;
+		BufferCreateInfo bufferInfo = stagingBuffer(sizeof(UniformBufferObject));
+		createBuffer(bufferInfo, stagingBuffer, stagingAlloc, &allocRes);
+		memcpy(allocRes.pMappedData, &ubo, sizeof(UniformBufferObject));
+
+		VkBufferCopy copyRegion{.size = sizeof(UniformBufferObject)};
+		SingleTimeCommand cmd = beginSingleTimeCommand(transferPool, transferQueue);
+		vkCmdCopyBuffer(cmd.commandBuffer, stagingBuffer, uniformBuffers[frame_i], 1,
+						&copyRegion);
+		cmd.flush();
 	}
 
 	void createStorageBuffers() {
@@ -1601,7 +1646,8 @@ class ParticleApplication {
 
 		res = vkResetCommandBuffer(commandBuffers[currFrame], 0);
 		checkError(res, "Failed to reset current frame command buffer");
-		recordCommandBuffer(commandBuffers[currFrame], imageIndex);
+		updateUniformBuffer(currFrame);
+		recordDrawCommandBuffer(commandBuffers[currFrame], imageIndex);
 
 		VkPipelineStageFlags waitStages[] = {
 			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1638,7 +1684,7 @@ class ParticleApplication {
 		currFrame = (currFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	}
 
-	void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image_i) {
+	void recordDrawCommandBuffer(VkCommandBuffer commandBuffer, uint32_t image_i) {
 		VkCommandBufferBeginInfo beginInfo{
 			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
 		int res = vkBeginCommandBuffer(commandBuffer, &beginInfo);
@@ -1662,6 +1708,9 @@ class ParticleApplication {
 		VkDeviceSize offsets[] = {0};
 		vkCmdBindVertexBuffers(commandBuffer, 0, 1, &storageBuffers[currFrame],
 							   offsets);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+								graphicsPipelineLayout, 0, 1,
+								&renderDescriptorSets[currFrame], 0, nullptr);
 		vkCmdDraw(commandBuffer, PARTICLE_COUNT, 1, 0, 0);
 		vkCmdEndRenderPass(commandBuffer);
 		res = vkEndCommandBuffer(commandBuffer);
@@ -1672,6 +1721,7 @@ class ParticleApplication {
 		while (!glfwWindowShouldClose(window)) {
 			glfwPollEvents();
 			drawFrame();
+			currentTime = std::chrono::high_resolution_clock::now();
 		}
 		vkDeviceWaitIdle(device);
 	}
