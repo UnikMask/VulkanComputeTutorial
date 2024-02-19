@@ -39,7 +39,7 @@ add_custom_target ( compile_tags ALL
     COMMENT "Compiling project tags")
 
 add_custom_target ( copy_resources ALL 
-    COMMAND cp -r shaders/ build/
+    COMMAND cp -r shaders/ ${CMAKE_CURRENT_BINARY_DIR}
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Copying resources to build"
 )
