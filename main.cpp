@@ -43,7 +43,7 @@
 const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
 const int MAX_FRAMES_IN_FLIGHT = 5;
-const uint32_t PARTICLE_COUNT = 8192;
+const uint32_t PARTICLE_COUNT = 8192 * 2;
 
 const std::vector<const char *> VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 
@@ -187,7 +187,6 @@ static void checkError(int result, const std::string &message) {
 class ParticleApplication {
   public:
 	bool frameBufferResized = false;
-	bool firstFrame = true;
 	uint32_t currFrame = 0;
 	std::chrono::time_point<std::chrono::high_resolution_clock> currentTime =
 		std::chrono::high_resolution_clock::now();
@@ -1107,7 +1106,7 @@ class ParticleApplication {
 	void createSyncObjects() {
 		graphicsInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
 		computeInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
-		computeFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT * 2);
+		computeFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
 		renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
 		imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
 
@@ -1130,10 +1129,6 @@ class ParticleApplication {
 			res = vkCreateSemaphore(device, &info, nullptr,
 									&computeFinishedSemaphores[i]);
 			checkError(res, "Failed to create compute finished semaphore");
-			res = vkCreateSemaphore(
-				device, &info, nullptr,
-				&computeFinishedSemaphores[i + MAX_FRAMES_IN_FLIGHT]);
-			checkError(res, "Failed to create compute finished semaphore");
 			res = vkCreateSemaphore(device, &info, nullptr,
 									&imageAvailableSemaphores[i]);
 			checkError(res, "Failed to create image available semaphore");
@@ -1146,9 +1141,6 @@ class ParticleApplication {
 			vkDestroyFence(device, computeInFlightFences[i], nullptr);
 			vkDestroySemaphore(device, renderFinishedSemaphores[i], nullptr);
 			vkDestroySemaphore(device, computeFinishedSemaphores[i], nullptr);
-			vkDestroySemaphore(device,
-							   computeFinishedSemaphores[i + MAX_FRAMES_IN_FLIGHT],
-							   nullptr);
 			vkDestroySemaphore(device, imageAvailableSemaphores[i], nullptr);
 		}
 	}
@@ -1665,28 +1657,13 @@ class ParticleApplication {
 		vkResetCommandBuffer(computeCommandBuffers[currFrame], 0);
 		recordComputeCommandBuffer(computeCommandBuffers[currFrame]);
 
-		VkPipelineStageFlags computeWaitStages[] = {
-			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT};
-		std::vector<VkSemaphore> signalSemaphores{
-			computeFinishedSemaphores[currFrame],
-			computeFinishedSemaphores[MAX_FRAMES_IN_FLIGHT +
-									  ((currFrame + 1) % MAX_FRAMES_IN_FLIGHT)],
-		};
 		VkSubmitInfo computeSubmitInfo{
 			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-			.waitSemaphoreCount = 1,
-			.pWaitSemaphores =
-				&computeFinishedSemaphores[MAX_FRAMES_IN_FLIGHT + currFrame],
-			.pWaitDstStageMask = computeWaitStages,
 			.commandBufferCount = 1,
 			.pCommandBuffers = &computeCommandBuffers[currFrame],
-			.signalSemaphoreCount = (uint32_t)signalSemaphores.size(),
-			.pSignalSemaphores = signalSemaphores.data(),
+			.signalSemaphoreCount = 1,
+			.pSignalSemaphores = &computeFinishedSemaphores[currFrame],
 		};
-		if (firstFrame) {
-			computeSubmitInfo.waitSemaphoreCount = 0;
-			firstFrame = false;
-		}
 		res = vkQueueSubmit(computeQueue, 1, &computeSubmitInfo,
 							computeInFlightFences[currFrame]);
 		checkError(res, "Failed to submit compute command buffer");
@@ -1789,6 +1766,16 @@ class ParticleApplication {
 		int res = vkBeginCommandBuffer(commandBuffer, &beginInfo);
 		checkError(res, "Failed to begin compute command buffer recording");
 
+		VkBufferMemoryBarrier barrier{
+			.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.buffer = storageBuffers[(MAX_FRAMES_IN_FLIGHT + currFrame - 1) %
+									 MAX_FRAMES_IN_FLIGHT],
+			.size = VK_WHOLE_SIZE};
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 1,
+							 &barrier, 0, nullptr);
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 						  computePipeline);
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
