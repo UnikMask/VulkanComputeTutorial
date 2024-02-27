@@ -260,10 +260,13 @@ class ParticleApplication {
 	VkRenderPass renderPass;
 	VkDescriptorSetLayout graphicsDescriptorSetLayout;
 	VkDescriptorSetLayout computeDescriptorSetLayout;
+	VkDescriptorSetLayout postProcDescriptorSetLayout;
 	VkPipelineLayout graphicsPipelineLayout;
 	VkPipeline graphicsPipeline;
 	VkPipelineLayout computePipelineLayout;
 	VkPipeline computePipeline;
+	VkPipelineLayout postProcPipelineLayout;
+	VkPipeline postProcPipeline;
 
 	VkViewport viewport;
 	VkRect2D scissor;
@@ -291,6 +294,11 @@ class ParticleApplication {
 	std::vector<VmaAllocation> storageBufferMemories;
 	VkDescriptorPool computeDescriptorPool;
 	std::vector<VkDescriptorSet> computeDescriptorSets;
+	std::vector<VkDescriptorSet> postProcDescriptorSets;
+
+	std::vector<VkImage> mainRenderImages;
+	std::vector<VmaAllocation> mainRenderImageAllocs;
+	std::vector<VkImageView> mainRenderViews;
 
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 	VkImage colorImage;
@@ -1076,6 +1084,27 @@ class ParticleApplication {
 		checkError(res, "Failed to create compute descriptor set layout");
 	}
 
+	void createPostProcDescriptorSetLayout() {
+		std::vector<VkDescriptorSetLayoutBinding> bindings = {
+			{.binding = 0,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			 .descriptorCount = 1,
+			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			 .pImmutableSamplers = nullptr},
+			{.binding = 1,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			 .descriptorCount = 1,
+			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+			 .pImmutableSamplers = nullptr}};
+		VkDescriptorSetLayoutCreateInfo layoutInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.bindingCount = (uint32_t)bindings.size(),
+			.pBindings = bindings.data()};
+		int res = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr,
+											  &postProcDescriptorSetLayout);
+		checkError(res, "Failed to create post-processing descriptor set layout");
+	}
+
 	void createCommandPools() {
 		QueueFamilyIndices queueFamilyIndices = pickQueueFamilies(physicalDevice);
 
@@ -1346,11 +1375,14 @@ class ParticleApplication {
 			{.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
 			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT},
 			{.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2}};
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2},
+			{.type = VK_DESCRIPTOR_TYPE_SAMPLER,
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2},
+		};
 
 		VkDescriptorPoolCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-			.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT,
+			.maxSets = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2,
 			.poolSizeCount = (uint32_t)poolSizes.size(),
 			.pPoolSizes = poolSizes.data(),
 		};
@@ -1399,6 +1431,36 @@ class ParticleApplication {
 								 .levelCount = 1,
 								 .layerCount = 1}};
 		colorImageView = createImageView(viewInfo);
+	}
+
+	void createMainPassResources() {
+		mainRenderImages.resize(MAX_FRAMES_IN_FLIGHT);
+		mainRenderImageAllocs.resize(MAX_FRAMES_IN_FLIGHT);
+		mainRenderViews.resize(MAX_FRAMES_IN_FLIGHT);
+
+		ImageCreateInfo mainPassImageInfo{
+			.extent = {.width = swapChainExtent.width,
+					   .height = swapChainExtent.height,
+					   .depth = 1},
+			.format = swapChainFormat,
+			.tiling = VK_IMAGE_TILING_OPTIMAL,
+			.numSamples = VK_SAMPLE_COUNT_1_BIT,
+			.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT};
+		VmaAllocationInfo allocRes{};
+
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			createImage(mainPassImageInfo, mainRenderImages[i],
+						mainRenderImageAllocs[i], &allocRes);
+
+			ImageViewInfo viewInfo{
+				.image = mainRenderImages[i],
+				.format = swapChainFormat,
+				.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+									 .levelCount = 1,
+									 .layerCount = 1}};
+			mainRenderViews[i] = createImageView(viewInfo);
+		}
 	}
 
 	void createGraphicsDescriptorSets() {
@@ -1492,6 +1554,41 @@ class ParticleApplication {
 			vkUpdateDescriptorSets(device, (uint32_t)descriptorWrites.size(),
 								   descriptorWrites.data(), 0, nullptr);
 		}
+	}
+
+	void createPostProcDescriptorSets() {
+		VkDescriptorSetAllocateInfo descriptorSetInfo{
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.descriptorPool = computeDescriptorPool,
+			.descriptorSetCount = (uint32_t)MAX_FRAMES_IN_FLIGHT,
+			.pSetLayouts = &postProcDescriptorSetLayout};
+		postProcDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
+		int res = vkAllocateDescriptorSets(device, &descriptorSetInfo,
+										   postProcDescriptorSets.data());
+		checkError(res, "Failed to create post-processing descriptor sets");
+
+		std::vector<VkWriteDescriptorSet> writes;
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+			VkDescriptorImageInfo readImageInfo{
+				.imageView = mainRenderViews[i],
+				.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL};
+			VkDescriptorImageInfo writeImageInfo{
+				.imageView = swapChainImageViews[i],
+				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+
+			writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+							  .dstSet = postProcDescriptorSets[i],
+							  .dstBinding = 0,
+							  .descriptorCount = 1,
+							  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+			writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+							  .dstSet = postProcDescriptorSets[i],
+							  .dstBinding = 1,
+							  .descriptorCount = 1,
+							  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+		}
+		vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0,
+							   nullptr);
 	}
 
 	VkResult createShaderModule(const std::vector<char> &code,
