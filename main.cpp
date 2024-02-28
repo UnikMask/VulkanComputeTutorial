@@ -296,9 +296,9 @@ class ParticleApplication {
 	std::vector<VkDescriptorSet> computeDescriptorSets;
 	std::vector<VkDescriptorSet> postProcDescriptorSets;
 
-	std::vector<VkImage> mainRenderImages;
-	std::vector<VmaAllocation> mainRenderImageAllocs;
-	std::vector<VkImageView> mainRenderViews;
+	VkImage mainRenderImages;
+	VmaAllocation mainRenderImageAllocs;
+	VkImageView mainRenderViews;
 
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 	VkImage colorImage;
@@ -887,6 +887,7 @@ class ParticleApplication {
 			.extent = swapChainExtent,
 		};
 		createSwapChainImageViews();
+		createMainPassResources();
 		createColorResources();
 		createRenderPass();
 
@@ -904,6 +905,8 @@ class ParticleApplication {
 		vkDestroyRenderPass(device, renderPass, nullptr);
 		vkDestroyImageView(device, colorImageView, nullptr);
 		vmaDestroyImage(allocator, colorImage, colorImageMemory);
+		vkDestroyImageView(device, mainRenderViews, nullptr);
+		vmaDestroyImage(allocator, mainRenderImages, mainRenderImageAllocs);
 		for (size_t i = 0; i < swapChainImages.size(); i++) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
@@ -1434,10 +1437,6 @@ class ParticleApplication {
 	}
 
 	void createMainPassResources() {
-		mainRenderImages.resize(MAX_FRAMES_IN_FLIGHT);
-		mainRenderImageAllocs.resize(MAX_FRAMES_IN_FLIGHT);
-		mainRenderViews.resize(MAX_FRAMES_IN_FLIGHT);
-
 		ImageCreateInfo mainPassImageInfo{
 			.extent = {.width = swapChainExtent.width,
 					   .height = swapChainExtent.height,
@@ -1449,18 +1448,16 @@ class ParticleApplication {
 			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT};
 		VmaAllocationInfo allocRes{};
 
-		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
-			createImage(mainPassImageInfo, mainRenderImages[i],
-						mainRenderImageAllocs[i], &allocRes);
+		createImage(mainPassImageInfo, mainRenderImages, mainRenderImageAllocs,
+					&allocRes);
 
-			ImageViewInfo viewInfo{
-				.image = mainRenderImages[i],
-				.format = swapChainFormat,
-				.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-									 .levelCount = 1,
-									 .layerCount = 1}};
-			mainRenderViews[i] = createImageView(viewInfo);
-		}
+		ImageViewInfo viewInfo{
+			.image = mainRenderImages,
+			.format = swapChainFormat,
+			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+								 .levelCount = 1,
+								 .layerCount = 1}};
+		mainRenderViews = createImageView(viewInfo);
 	}
 
 	void createGraphicsDescriptorSets() {
@@ -1570,7 +1567,7 @@ class ParticleApplication {
 		std::vector<VkWriteDescriptorSet> writes;
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			VkDescriptorImageInfo readImageInfo{
-				.imageView = mainRenderViews[i],
+				.imageView = mainRenderViews,
 				.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL};
 			VkDescriptorImageInfo writeImageInfo{
 				.imageView = swapChainImageViews[i],
@@ -1692,32 +1689,56 @@ class ParticleApplication {
 		vkDestroyShaderModule(device, vertShader, nullptr);
 	}
 
-	void createComputePipeline() {
+	struct ComputePipelineCreateInfo {
+		std::string shaderPath;
+		VkPipelineLayout &pipelineLayout;
+		VkPipeline &pipeline;
+		std::vector<VkDescriptorSetLayout> layouts;
+	};
+
+	VkResult createComputePipeline(ComputePipelineCreateInfo info) {
 		VkShaderModule compShaderModule;
-		int res = createShaderModule(readFile("shaders/tutorial.comp.spv"),
-									 compShaderModule);
-		checkError(res, "Failed to create compute shader module");
 		VkPipelineShaderStageCreateInfo computeShaderStageInfo{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			.stage = VK_SHADER_STAGE_COMPUTE_BIT,
-			.module = compShaderModule,
 			.pName = "main"};
 		VkPipelineLayoutCreateInfo computeLayoutInfo{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-			.setLayoutCount = 1,
-			.pSetLayouts = &computeDescriptorSetLayout,
+			.setLayoutCount = (uint32_t)info.layouts.size(),
+			.pSetLayouts = info.layouts.data(),
 		};
-		res = vkCreatePipelineLayout(device, &computeLayoutInfo, nullptr,
-									 &computePipelineLayout);
 		VkComputePipelineCreateInfo computeInfo{
-			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-			.stage = computeShaderStageInfo,
-			.layout = computePipelineLayout};
-		res = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &computeInfo,
-									   nullptr, &computePipeline);
-		checkError(res, "Failed to create compute pipeline");
+			.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
 
+		VkResult res =
+			createShaderModule(readFile(info.shaderPath), compShaderModule);
+		if (res != VK_SUCCESS)
+			goto computepipeline_clean;
+
+		res = vkCreatePipelineLayout(device, &computeLayoutInfo, nullptr,
+									 &info.pipelineLayout);
+		if (res != VK_SUCCESS)
+			goto computepipeline_clean;
+
+		computeShaderStageInfo.module = compShaderModule;
+		computeInfo.stage = computeShaderStageInfo;
+		computeInfo.layout = info.pipelineLayout;
+		res = vkCreateComputePipelines(device, nullptr, 1, &computeInfo, nullptr,
+									   &info.pipeline);
+
+	computepipeline_clean:
 		vkDestroyShaderModule(device, compShaderModule, nullptr);
+		return res;
+	}
+
+	void createComputePipeline() {
+		int res = createComputePipeline({
+			.shaderPath = "shaders/tutorial.comp.spv",
+			.pipelineLayout = computePipelineLayout,
+			.pipeline = computePipeline,
+			.layouts = {computeDescriptorSetLayout},
+		});
+		checkError(res, "Failed to create compute pipeline!");
 	}
 
 	void createFrameBuffers() {
