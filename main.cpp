@@ -219,8 +219,11 @@ class ParticleApplication {
 		vkDestroyCommandPool(device, computePool, nullptr);
 		vkDestroyDescriptorSetLayout(device, graphicsDescriptorSetLayout, nullptr);
 		vkDestroyDescriptorSetLayout(device, computeDescriptorSetLayout, nullptr);
+		vkDestroyDescriptorSetLayout(device, postProcDescriptorSetLayout, nullptr);
 		vkDestroyPipeline(device, computePipeline, nullptr);
 		vkDestroyPipelineLayout(device, computePipelineLayout, nullptr);
+		vkDestroyPipeline(device, postProcPipeline, nullptr);
+		vkDestroyPipelineLayout(device, postProcPipelineLayout, nullptr);
 		vmaDestroyAllocator(allocator);
 		destroySyncObjects();
 
@@ -296,9 +299,14 @@ class ParticleApplication {
 	std::vector<VkDescriptorSet> computeDescriptorSets;
 	std::vector<VkDescriptorSet> postProcDescriptorSets;
 
-	VkImage mainRenderImages;
-	VmaAllocation mainRenderImageAllocs;
-	VkImageView mainRenderViews;
+	VkImage mainPassImage;
+	VmaAllocation mainPassAlloc;
+	VkImageView mainPassView;
+	VkSampler mainPassSampler;
+
+	VkImage postProcImage;
+	VmaAllocation postProcAlloc;
+	VkImageView postProcView;
 
 	VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_1_BIT;
 	VkImage colorImage;
@@ -335,23 +343,26 @@ class ParticleApplication {
 		createGraphicsDescriptorSetLayout();
 		createCommandPools();
 		createComputeDescriptorSetLayout();
+		createPostProcDescriptorSetLayout();
 		createGraphicsDescriptorPool();
 		createComputeDescriptorPool();
 		createGraphicsCommandBuffers();
 		createComputeCommandBuffers();
 		createComputePipeline();
+		createGaussBlurPipeline();
 		createAllocator();
 
 		// Allocator dependents
 		createUniformBuffers();
 		createStorageBuffers();
 
+		// Swap chain dependents
+		createSwapChainDependents();
+
 		// Buffer/image/swapchain dependent
 		createGraphicsDescriptorSets();
 		createComputeDescriptorSets();
-
-		// Swap chain dependents
-		createSwapChainDependents();
+		createPostProcDescriptorSets();
 
 		// Render pass dependents
 		createGraphicsPipeline();
@@ -682,13 +693,14 @@ class ParticleApplication {
 		VkExtent3D extent;
 		VkFormat format;
 		VkImageType imageType = VK_IMAGE_TYPE_2D;
-		VkImageTiling tiling;
+		VkImageTiling tiling = VK_IMAGE_TILING_OPTIMAL;
 		VkImageCreateFlags imageFlags = 0;
 		uint32_t mipLevels = 1;
 		uint32_t arrayLayers = 1;
-		VkSampleCountFlagBits numSamples = VK_SAMPLE_COUNT_1_BIT;
-		VkImageUsageFlags usage = 0;
-		VmaAllocationCreateFlags allocFlags = 0;
+		VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+		VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+		VmaAllocationCreateFlags allocFlags =
+			VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
 	};
 	void createImage(ImageCreateInfo &info, VkImage &image,
 					 VmaAllocation &allocation, VmaAllocationInfo *allocRes) {
@@ -701,7 +713,7 @@ class ParticleApplication {
 			.extent = info.extent,
 			.mipLevels = info.mipLevels,
 			.arrayLayers = info.arrayLayers,
-			.samples = info.numSamples,
+			.samples = info.samples,
 			.tiling = info.tiling,
 			.usage = info.usage,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
@@ -785,7 +797,7 @@ class ParticleApplication {
 
 		VkSurfaceFormatKHR format = details.formats[0];
 		for (const auto &f : details.formats) {
-			if (f.format == VK_FORMAT_B8G8R8A8_SRGB &&
+			if (f.format == VK_FORMAT_B8G8R8A8_UNORM &&
 				f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
 				format = f;
 				break;
@@ -889,6 +901,7 @@ class ParticleApplication {
 		createSwapChainImageViews();
 		createMainPassResources();
 		createColorResources();
+		createMainPassResources();
 		createRenderPass();
 
 		// Render pass dependents
@@ -905,11 +918,15 @@ class ParticleApplication {
 		vkDestroyRenderPass(device, renderPass, nullptr);
 		vkDestroyImageView(device, colorImageView, nullptr);
 		vmaDestroyImage(allocator, colorImage, colorImageMemory);
-		vkDestroyImageView(device, mainRenderViews, nullptr);
-		vmaDestroyImage(allocator, mainRenderImages, mainRenderImageAllocs);
 		for (size_t i = 0; i < swapChainImages.size(); i++) {
 			vkDestroyImageView(device, swapChainImageViews[i], nullptr);
 		}
+		// Post-processing resources
+		vkDestroyImageView(device, mainPassView, nullptr);
+		vkDestroySampler(device, mainPassSampler, nullptr);
+		vmaDestroyImage(allocator, mainPassImage, mainPassAlloc);
+		vkDestroyImageView(device, postProcView, nullptr);
+		vmaDestroyImage(allocator, postProcImage, postProcAlloc);
 
 		vkDestroySwapchainKHR(device, swapChain, nullptr);
 	}
@@ -917,13 +934,19 @@ class ParticleApplication {
 	struct ImageViewInfo {
 		VkImage image;
 		VkFormat format;
+		VkImageViewCreateFlags flags = 0;
 		VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
-		VkImageSubresourceRange subresourceRange;
+		VkImageSubresourceRange subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = 1,
+		};
 	};
 
 	VkImageView createImageView(ImageViewInfo &info) {
 		VkImageViewCreateInfo createInfo{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.flags = info.flags,
 			.image = info.image,
 			.viewType = info.viewType,
 			.format = info.format,
@@ -1090,7 +1113,7 @@ class ParticleApplication {
 	void createPostProcDescriptorSetLayout() {
 		std::vector<VkDescriptorSetLayoutBinding> bindings = {
 			{.binding = 0,
-			 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
 			 .descriptorCount = 1,
 			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 			 .pImmutableSamplers = nullptr},
@@ -1098,6 +1121,7 @@ class ParticleApplication {
 			 .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 			 .descriptorCount = 1,
 			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+
 			 .pImmutableSamplers = nullptr}};
 		VkDescriptorSetLayoutCreateInfo layoutInfo{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1420,7 +1444,7 @@ class ParticleApplication {
 					   .depth = 1},
 			.format = swapChainFormat,
 			.tiling = VK_IMAGE_TILING_OPTIMAL,
-			.numSamples = msaaSamples,
+			.samples = msaaSamples,
 			.usage = VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
 					 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
@@ -1437,27 +1461,36 @@ class ParticleApplication {
 	}
 
 	void createMainPassResources() {
-		ImageCreateInfo mainPassImageInfo{
-			.extent = {.width = swapChainExtent.width,
-					   .height = swapChainExtent.height,
-					   .depth = 1},
-			.format = swapChainFormat,
-			.tiling = VK_IMAGE_TILING_OPTIMAL,
-			.numSamples = VK_SAMPLE_COUNT_1_BIT,
-			.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-			.allocFlags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT};
-		VmaAllocationInfo allocRes{};
+		// Create main pass image
+		ImageCreateInfo imageInfo{.extent = {.width = swapChainExtent.width,
+											 .height = swapChainExtent.height,
+											 .depth = 1},
+								  .format = swapChainFormat};
+		createImage(imageInfo, mainPassImage, mainPassAlloc, nullptr);
+		ImageViewInfo mainPassViewi{.image = mainPassImage,
+									.format = swapChainFormat};
+		mainPassView = createImageView(mainPassViewi);
+		VkSamplerCreateInfo samplerInfo{
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_NEAREST,
+			.minFilter = VK_FILTER_NEAREST,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			.mipLodBias = 0.0f,
+			.anisotropyEnable = VK_FALSE,
+			.compareEnable = VK_FALSE,
+			.compareOp = VK_COMPARE_OP_ALWAYS,
+			.borderColor = VK_BORDER_COLOR_INT_TRANSPARENT_BLACK,
+			.unnormalizedCoordinates = VK_FALSE};
+		int res = vkCreateSampler(device, &samplerInfo, nullptr, &mainPassSampler);
+		checkError(res, "Failed to create main pass sampler");
 
-		createImage(mainPassImageInfo, mainRenderImages, mainRenderImageAllocs,
-					&allocRes);
-
-		ImageViewInfo viewInfo{
-			.image = mainRenderImages,
-			.format = swapChainFormat,
-			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-								 .levelCount = 1,
-								 .layerCount = 1}};
-		mainRenderViews = createImageView(viewInfo);
+		// Create post-processing image
+		imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+		createImage(imageInfo, postProcImage, postProcAlloc, nullptr);
+		ImageViewInfo postProcViewi{.image = postProcImage,
+									.format = swapChainFormat};
+		mainPassViewi.image = postProcImage;
+		postProcView = createImageView(postProcViewi);
 	}
 
 	void createGraphicsDescriptorSets() {
@@ -1554,11 +1587,13 @@ class ParticleApplication {
 	}
 
 	void createPostProcDescriptorSets() {
+		std::vector<VkDescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT,
+												   postProcDescriptorSetLayout);
 		VkDescriptorSetAllocateInfo descriptorSetInfo{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 			.descriptorPool = computeDescriptorPool,
 			.descriptorSetCount = (uint32_t)MAX_FRAMES_IN_FLIGHT,
-			.pSetLayouts = &postProcDescriptorSetLayout};
+			.pSetLayouts = layouts.data()};
 		postProcDescriptorSets.resize(MAX_FRAMES_IN_FLIGHT);
 		int res = vkAllocateDescriptorSets(device, &descriptorSetInfo,
 										   postProcDescriptorSets.data());
@@ -1567,22 +1602,24 @@ class ParticleApplication {
 		std::vector<VkWriteDescriptorSet> writes;
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			VkDescriptorImageInfo readImageInfo{
-				.imageView = mainRenderViews,
+				.sampler = mainPassSampler,
+				.imageView = mainPassView,
 				.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL};
 			VkDescriptorImageInfo writeImageInfo{
-				.imageView = swapChainImageViews[i],
-				.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+				.imageView = postProcView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
 			writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 							  .dstSet = postProcDescriptorSets[i],
 							  .dstBinding = 0,
 							  .descriptorCount = 1,
-							  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+							  .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+							  .pImageInfo = &readImageInfo});
 			writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 							  .dstSet = postProcDescriptorSets[i],
 							  .dstBinding = 1,
 							  .descriptorCount = 1,
-							  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});
+							  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+							  .pImageInfo = &writeImageInfo});
 		}
 		vkUpdateDescriptorSets(device, (uint32_t)writes.size(), writes.data(), 0,
 							   nullptr);
@@ -1740,6 +1777,16 @@ class ParticleApplication {
 		});
 		checkError(res, "Failed to create compute pipeline!");
 	}
+
+	void createGaussBlurPipeline() {
+		int res = createComputePipeline({
+			.shaderPath = "shaders/gaussblur.comp.spv",
+			.pipelineLayout = postProcPipelineLayout,
+			.pipeline = postProcPipeline,
+			.layouts = {postProcDescriptorSetLayout},
+		});
+		checkError(res, "Failed to create gaussian blue pipeline!");
+	};
 
 	void createFrameBuffers() {
 		swapChainFramebuffers.resize(swapChainImages.size());
