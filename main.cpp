@@ -43,7 +43,7 @@
 const uint32_t HEIGHT = 480;
 const uint32_t WIDTH = 640;
 const int MAX_FRAMES_IN_FLIGHT = 5;
-const uint32_t PARTICLE_COUNT = 8192 * 2;
+const uint32_t PARTICLE_COUNT = 1024;
 
 const std::vector<const char *> VALIDATION_LAYERS = {"VK_LAYER_KHRONOS_validation"};
 
@@ -474,6 +474,7 @@ class ParticleApplication {
 				break;
 			}
 		}
+		msaaSamples = VK_SAMPLE_COUNT_2_BIT;
 	}
 
 	struct QueueFamilyIndices {
