@@ -1,7 +1,7 @@
 // vim:ft=glsl
 #version 460
 
-layout (local_size_x = 32, local_size_y = 32) in;
+layout (local_size_x = 1, local_size_y = 1) in;
 
 layout (binding = 0) uniform sampler2D mainRender;
 layout (binding = 1) uniform writeonly image2D finalRender;
