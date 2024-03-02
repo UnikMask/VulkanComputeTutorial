@@ -844,7 +844,8 @@ class ParticleApplication {
 			.imageColorSpace = format.colorSpace,
 			.imageExtent = swapExtent,
 			.imageArrayLayers = 1,
-			.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+			.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+						  VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 			.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 			.preTransform = details.capabilities.currentTransform,
 			.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
@@ -884,6 +885,7 @@ class ParticleApplication {
 		vkDeviceWaitIdle(device);
 		cleanupSwapChainDependents();
 		createSwapChainDependents();
+		updatePostProcDescriptorSets();
 	}
 
 	void createSwapChainDependents() {
@@ -1113,7 +1115,7 @@ class ParticleApplication {
 	void createPostProcDescriptorSetLayout() {
 		std::vector<VkDescriptorSetLayoutBinding> bindings = {
 			{.binding = 0,
-			 .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+			 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			 .descriptorCount = 1,
 			 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
 			 .pImmutableSamplers = nullptr},
@@ -1403,9 +1405,10 @@ class ParticleApplication {
 			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT},
 			{.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
 			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2},
-			{.type = VK_DESCRIPTOR_TYPE_SAMPLER,
-			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT * 2},
-		};
+			{.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT},
+			{.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+			 .descriptorCount = (uint32_t)MAX_FRAMES_IN_FLIGHT}};
 
 		VkDescriptorPoolCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -1465,7 +1468,9 @@ class ParticleApplication {
 		ImageCreateInfo imageInfo{.extent = {.width = swapChainExtent.width,
 											 .height = swapChainExtent.height,
 											 .depth = 1},
-								  .format = swapChainFormat};
+								  .format = swapChainFormat,
+								  .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+										   VK_IMAGE_USAGE_SAMPLED_BIT};
 		createImage(imageInfo, mainPassImage, mainPassAlloc, nullptr);
 		ImageViewInfo mainPassViewi{.image = mainPassImage,
 									.format = swapChainFormat};
@@ -1485,12 +1490,44 @@ class ParticleApplication {
 		checkError(res, "Failed to create main pass sampler");
 
 		// Create post-processing image
-		imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+		imageInfo.usage =
+			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 		createImage(imageInfo, postProcImage, postProcAlloc, nullptr);
 		ImageViewInfo postProcViewi{.image = postProcImage,
 									.format = swapChainFormat};
 		mainPassViewi.image = postProcImage;
 		postProcView = createImageView(postProcViewi);
+
+		auto stc = beginSingleTimeCommand(transferPool, transferQueue);
+		VkImageMemoryBarrier postProcb{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_NONE,
+			.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = postProcImage,
+			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+								 .levelCount = 1,
+								 .layerCount = 1}};
+		VkImageMemoryBarrier mainPassb{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_NONE,
+			.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = mainPassImage,
+			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+								 .levelCount = 1,
+								 .layerCount = 1}};
+		VkImageMemoryBarrier imageBarriers[] = {postProcb, mainPassb};
+		vkCmdPipelineBarrier(stc.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+							 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+							 nullptr, 2, imageBarriers);
+		stc.flush();
 	}
 
 	void createGraphicsDescriptorSets() {
@@ -1598,22 +1635,26 @@ class ParticleApplication {
 		int res = vkAllocateDescriptorSets(device, &descriptorSetInfo,
 										   postProcDescriptorSets.data());
 		checkError(res, "Failed to create post-processing descriptor sets");
+		updatePostProcDescriptorSets();
+	}
 
+	void updatePostProcDescriptorSets() {
 		std::vector<VkWriteDescriptorSet> writes;
 		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
 			VkDescriptorImageInfo readImageInfo{
 				.sampler = mainPassSampler,
 				.imageView = mainPassView,
-				.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL};
+				.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
 			VkDescriptorImageInfo writeImageInfo{
 				.imageView = postProcView, .imageLayout = VK_IMAGE_LAYOUT_GENERAL};
 
-			writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-							  .dstSet = postProcDescriptorSets[i],
-							  .dstBinding = 0,
-							  .descriptorCount = 1,
-							  .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-							  .pImageInfo = &readImageInfo});
+			writes.push_back(
+				{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+				 .dstSet = postProcDescriptorSets[i],
+				 .dstBinding = 0,
+				 .descriptorCount = 1,
+				 .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				 .pImageInfo = &readImageInfo});
 			writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
 							  .dstSet = postProcDescriptorSets[i],
 							  .dstBinding = 1,
@@ -1921,6 +1962,97 @@ class ParticleApplication {
 								&renderDescriptorSets[currFrame], 0, nullptr);
 		vkCmdDraw(commandBuffer, PARTICLE_COUNT, 1, 0, 0);
 		vkCmdEndRenderPass(commandBuffer);
+
+		VkImageSubresourceRange defaultSubresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.levelCount = 1,
+			.layerCount = 1};
+		VkImageMemoryBarrier mainPassb{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = mainPassImage,
+			.subresourceRange = defaultSubresourceRange};
+		VkImageMemoryBarrier postProcb{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = 0,
+			.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = postProcImage,
+			.subresourceRange = defaultSubresourceRange};
+		std::vector<VkImageMemoryBarrier> imageMemBarriers{mainPassb, postProcb};
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+							 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+							 nullptr, imageMemBarriers.size(),
+							 imageMemBarriers.data());
+
+		// Run post-processing pipeline
+		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+						  postProcPipeline);
+		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+								postProcPipelineLayout, 0, 1,
+								&postProcDescriptorSets[currFrame], 0, nullptr);
+		vkCmdDispatch(commandBuffer, swapChainExtent.width, swapChainExtent.height,
+					  1);
+
+		// Prepare post-processing image and swap-chain image for copy
+		postProcb.srcAccessMask = 0;
+		postProcb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		postProcb.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		postProcb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		VkImageMemoryBarrier swapChainImageb{
+			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+			.srcAccessMask = 0,
+			.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+			.image = swapChainImages[image_i],
+			.subresourceRange = defaultSubresourceRange};
+		imageMemBarriers = {postProcb, swapChainImageb};
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+							 nullptr, imageMemBarriers.size(),
+							 imageMemBarriers.data());
+
+		// Copy post-processing image to swap chain image
+		VkImageSubresourceLayers defaultSubresource{.aspectMask =
+														VK_IMAGE_ASPECT_COLOR_BIT,
+													.mipLevel = 0,
+													.baseArrayLayer = 0,
+													.layerCount = 1};
+		VkImageCopy copyRegion{.srcSubresource = defaultSubresource,
+							   .dstSubresource = defaultSubresource,
+							   .extent = VkExtent3D{.width = swapChainExtent.width,
+													.height = swapChainExtent.height,
+													.depth = 1}};
+		vkCmdCopyImage(
+			commandBuffer, postProcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			swapChainImages[image_i], VK_IMAGE_LAYOUT_GENERAL, 1, &copyRegion);
+
+		// Prepare main pass and swap chain image their next operations
+		mainPassb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		mainPassb.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		mainPassb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		mainPassb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		swapChainImageb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		swapChainImageb.dstAccessMask = 0;
+		swapChainImageb.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		swapChainImageb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+		imageMemBarriers = {mainPassb, swapChainImageb};
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+							 nullptr, imageMemBarriers.size(),
+							 imageMemBarriers.data());
+
 		res = vkEndCommandBuffer(commandBuffer);
 		checkError(res, "Failed to end draw command buffer recording");
 	}
