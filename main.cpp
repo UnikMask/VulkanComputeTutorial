@@ -899,7 +899,6 @@ class ParticleApplication {
 			.extent = swapChainExtent,
 		};
 		createSwapChainImageViews();
-		createMainPassResources();
 		createColorResources();
 		createMainPassResources();
 		createRenderPass();
