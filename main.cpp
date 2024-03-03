@@ -274,7 +274,7 @@ class ParticleApplication {
 	VkViewport viewport;
 	VkRect2D scissor;
 
-	std::vector<VkFramebuffer> swapChainFramebuffers;
+	VkFramebuffer mainPassFramebuffer;
 	VkCommandPool graphicsPool;
 	VkCommandPool transferPool;
 	VkCommandPool computePool;
@@ -907,14 +907,12 @@ class ParticleApplication {
 		createRenderPass();
 
 		// Render pass dependents
-		createFrameBuffers();
+		createFramebuffers();
 	}
 
 	void cleanupSwapChainDependents() {
 		// Render pass dependents
-		for (size_t i = 0; i < swapChainImages.size(); i++) {
-			vkDestroyFramebuffer(device, swapChainFramebuffers[i], nullptr);
-		}
+		vkDestroyFramebuffer(device, mainPassFramebuffer, nullptr);
 
 		// Swap chain dependents
 		vkDestroyRenderPass(device, renderPass, nullptr);
@@ -1047,24 +1045,19 @@ class ParticleApplication {
 	}
 
 	void createFramebuffers() {
-		swapChainFramebuffers.resize(swapChainImages.size());
-
-		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
-			std::vector<VkImageView> imageViews = {colorImageView,
-												   swapChainImageViews[i]};
-			VkFramebufferCreateInfo framebufferInfo{
-				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-				.renderPass = renderPass,
-				.attachmentCount = (uint32_t)imageViews.size(),
-				.pAttachments = imageViews.data(),
-				.width = swapChainExtent.width,
-				.height = swapChainExtent.height,
-				.layers = 1,
-			};
-			int res = vkCreateFramebuffer(device, &framebufferInfo, nullptr,
-										  &swapChainFramebuffers[i]);
-			checkError(res, "Failed to create framebuffer");
-		}
+		std::vector<VkImageView> imageViews = {colorImageView, mainPassView};
+		VkFramebufferCreateInfo framebufferInfo{
+			.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+			.renderPass = renderPass,
+			.attachmentCount = (uint32_t)imageViews.size(),
+			.pAttachments = imageViews.data(),
+			.width = swapChainExtent.width,
+			.height = swapChainExtent.height,
+			.layers = 1,
+		};
+		int res = vkCreateFramebuffer(device, &framebufferInfo, nullptr,
+									  &mainPassFramebuffer);
+		checkError(res, "Failed to create framebuffer");
 	}
 
 	void createGraphicsDescriptorSetLayout() {
@@ -1480,12 +1473,15 @@ class ParticleApplication {
 			.magFilter = VK_FILTER_NEAREST,
 			.minFilter = VK_FILTER_NEAREST,
 			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
 			.mipLodBias = 0.0f,
 			.anisotropyEnable = VK_FALSE,
 			.compareEnable = VK_FALSE,
 			.compareOp = VK_COMPARE_OP_ALWAYS,
 			.borderColor = VK_BORDER_COLOR_INT_TRANSPARENT_BLACK,
-			.unnormalizedCoordinates = VK_FALSE};
+			.unnormalizedCoordinates = VK_TRUE};
 		int res = vkCreateSampler(device, &samplerInfo, nullptr, &mainPassSampler);
 		checkError(res, "Failed to create main pass sampler");
 
@@ -1829,27 +1825,6 @@ class ParticleApplication {
 		checkError(res, "Failed to create gaussian blue pipeline!");
 	};
 
-	void createFrameBuffers() {
-		swapChainFramebuffers.resize(swapChainImages.size());
-
-		for (size_t i = 0; i < swapChainFramebuffers.size(); i++) {
-			std::vector<VkImageView> attachments = {colorImageView,
-													swapChainImageViews[i]};
-			VkFramebufferCreateInfo framebufferInfo{
-				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-				.renderPass = renderPass,
-				.attachmentCount = (uint32_t)attachments.size(),
-				.pAttachments = attachments.data(),
-				.width = swapChainExtent.width,
-				.height = swapChainExtent.height,
-				.layers = 1,
-			};
-			int res = vkCreateFramebuffer(device, &framebufferInfo, nullptr,
-										  &swapChainFramebuffers[i]);
-			checkError(res, "Failed to create swap chain framebuffer");
-		}
-	}
-
 	void drawFrame() {
 		// Compute command
 		int res = vkWaitForFences(device, 1, &computeInFlightFences[currFrame],
@@ -1943,7 +1918,7 @@ class ParticleApplication {
 		VkRenderPassBeginInfo renderPassInfo{
 			.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 			.renderPass = renderPass,
-			.framebuffer = swapChainFramebuffers[image_i],
+			.framebuffer = mainPassFramebuffer,
 			.renderArea = {.extent = swapChainExtent},
 			.clearValueCount = (uint32_t)clearValues.size(),
 			.pClearValues = clearValues.data(),
@@ -1971,7 +1946,7 @@ class ParticleApplication {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
 			.dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
 			.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -1988,10 +1963,10 @@ class ParticleApplication {
 			.image = postProcImage,
 			.subresourceRange = defaultSubresourceRange};
 		std::vector<VkImageMemoryBarrier> imageMemBarriers{mainPassb, postProcb};
-		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
-							 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
-							 nullptr, imageMemBarriers.size(),
-							 imageMemBarriers.data());
+		vkCmdPipelineBarrier(
+			commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr,
+			imageMemBarriers.size(), imageMemBarriers.data());
 
 		// Run post-processing pipeline
 		vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
@@ -1999,20 +1974,27 @@ class ParticleApplication {
 		vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE,
 								postProcPipelineLayout, 0, 1,
 								&postProcDescriptorSets[currFrame], 0, nullptr);
-		vkCmdDispatch(commandBuffer, swapChainExtent.width, swapChainExtent.height,
-					  1);
+		uint32_t groupsX =
+					 swapChainExtent.width / 32 + (swapChainExtent.width % 32 != 0),
+				 groupsY = swapChainExtent.height / 32 +
+						   (swapChainExtent.height % 32 != 0);
+		vkCmdDispatch(commandBuffer, groupsX, groupsY, 1);
 
 		// Prepare post-processing image and swap-chain image for copy
 		postProcb.srcAccessMask = 0;
 		postProcb.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
 		postProcb.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 		postProcb.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		mainPassb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		mainPassb.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+		mainPassb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		mainPassb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 		VkImageMemoryBarrier swapChainImageb{
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = 0,
 			.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.image = swapChainImages[image_i],
@@ -2022,6 +2004,9 @@ class ParticleApplication {
 							 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
 							 nullptr, imageMemBarriers.size(),
 							 imageMemBarriers.data());
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+							 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0,
+							 nullptr, 0, nullptr, 1, &mainPassb);
 
 		// Copy post-processing image to swap chain image
 		VkImageSubresourceLayers defaultSubresource{.aspectMask =
@@ -2034,22 +2019,19 @@ class ParticleApplication {
 							   .extent = VkExtent3D{.width = swapChainExtent.width,
 													.height = swapChainExtent.height,
 													.depth = 1}};
-		vkCmdCopyImage(
-			commandBuffer, postProcImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			swapChainImages[image_i], VK_IMAGE_LAYOUT_GENERAL, 1, &copyRegion);
+		vkCmdCopyImage(commandBuffer, postProcImage,
+					   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					   swapChainImages[image_i],
+					   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copyRegion);
 
 		// Prepare main pass and swap chain image their next operations
-		mainPassb.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		mainPassb.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-		mainPassb.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		mainPassb.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-		swapChainImageb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		swapChainImageb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 		swapChainImageb.dstAccessMask = 0;
-		swapChainImageb.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		swapChainImageb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		swapChainImageb.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-		imageMemBarriers = {mainPassb, swapChainImageb};
-		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-							 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
+		imageMemBarriers = {swapChainImageb};
+		vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+							 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
 							 nullptr, imageMemBarriers.size(),
 							 imageMemBarriers.data());
 

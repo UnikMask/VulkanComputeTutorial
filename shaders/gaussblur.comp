@@ -1,12 +1,12 @@
 // vim:ft=glsl
 #version 460
 
-layout (local_size_x = 1, local_size_y = 1) in;
+layout (local_size_x = 32, local_size_y = 32) in;
 
 layout (binding = 0) uniform sampler2D mainRender;
 layout (binding = 1) uniform writeonly image2D finalRender;
 
 void main() {
-    vec4 fragColor = vec4(1, 1, 1, 1);
-    imageStore(finalRender, ivec2(gl_GlobalInvocationID.xy), fragColor);
+    vec4 fragColor = texture(mainRender, gl_GlobalInvocationID.xy);
+    imageStore(finalRender, ivec2(gl_GlobalInvocationID.xy), vec4(vec3(1) - fragColor.rgb, fragColor.a));
 }
