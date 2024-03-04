@@ -1481,7 +1481,7 @@ class ParticleApplication {
 			.compareEnable = VK_FALSE,
 			.compareOp = VK_COMPARE_OP_ALWAYS,
 			.borderColor = VK_BORDER_COLOR_INT_TRANSPARENT_BLACK,
-			.unnormalizedCoordinates = VK_TRUE};
+			.unnormalizedCoordinates = VK_FALSE};
 		int res = vkCreateSampler(device, &samplerInfo, nullptr, &mainPassSampler);
 		checkError(res, "Failed to create main pass sampler");
 
@@ -1493,37 +1493,6 @@ class ParticleApplication {
 									.format = swapChainFormat};
 		mainPassViewi.image = postProcImage;
 		postProcView = createImageView(postProcViewi);
-
-		auto stc = beginSingleTimeCommand(transferPool, transferQueue);
-		VkImageMemoryBarrier postProcb{
-			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-			.srcAccessMask = VK_ACCESS_NONE,
-			.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = postProcImage,
-			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-								 .levelCount = 1,
-								 .layerCount = 1}};
-		VkImageMemoryBarrier mainPassb{
-			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-			.srcAccessMask = VK_ACCESS_NONE,
-			.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-			.image = mainPassImage,
-			.subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-								 .levelCount = 1,
-								 .layerCount = 1}};
-		VkImageMemoryBarrier imageBarriers[] = {postProcb, mainPassb};
-		vkCmdPipelineBarrier(stc.commandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-							 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0,
-							 nullptr, 2, imageBarriers);
-		stc.flush();
 	}
 
 	void createGraphicsDescriptorSets() {
@@ -1956,7 +1925,7 @@ class ParticleApplication {
 			.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
 			.srcAccessMask = 0,
 			.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-			.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+			.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 			.newLayout = VK_IMAGE_LAYOUT_GENERAL,
 			.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
 			.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
