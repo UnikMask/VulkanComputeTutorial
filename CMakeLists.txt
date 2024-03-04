@@ -34,7 +34,7 @@ add_custom_target(compile_shaders ALL
     COMMENT "Compiling shaders")
 
 add_custom_target ( compile_tags ALL
-    COMMAND ctags -R --c++-kinds=+p --fields=+iaS --extras=+q . 
+    COMMAND ctags main.cpp --c++-kinds=+p --fields=+iaS --extras=+q . 
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     COMMENT "Compiling project tags")
 
