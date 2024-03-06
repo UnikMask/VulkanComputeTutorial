@@ -24,6 +24,14 @@ FetchContent_MakeAvailable(glfw)
 
 add_executable(VulkanCompute "./main.cpp")
 
+if (LINUX)
+    target_compile_options(${PROJECT_NAME} PRIVATE -fsanitize=address)
+    target_compile_options(${PROJECT_NAME} PRIVATE -fno-omit-frame-pointer)
+    target_link_options(${PROJECT_NAME} PRIVATE -fsanitize=address)
+    target_link_options(${PROJECT_NAME} PRIVATE -fno-omit-frame-pointer)
+    target_compile_options(${PROJECT_NAME} PRIVATE -fsanitize-address-use-after-scope)
+endif()
+
 message(STATUS $ENV{SHADER_COMPILE_SCRIPT})
 
 target_include_directories(${PROJECT_NAME} PRIVATE libs/)
